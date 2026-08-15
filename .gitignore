@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# macOS
+# ---------------------------------------------------------------------------
+.DS_Store
+
+# ---------------------------------------------------------------------------
+# Reference material (third-party sources used during development; fetch
+# them from the upstream locations listed in references/README.md)
+# ---------------------------------------------------------------------------
+references/
+
+# ---------------------------------------------------------------------------
+# Copyrighted ROM / OS images (Texas Instruments). Not distributable.
+# Users must supply their own .89u OS upgrade file.
+# ---------------------------------------------------------------------------
+*.89u
+*.89y
+*.rom
+*.bin
+
+# ---------------------------------------------------------------------------
+# Compiled FPGA binaries and Quartus build artifacts
+# ---------------------------------------------------------------------------
+output_files/
+db/
+incremental_db/
+greybox_tmp/
+hc_output/
+simulation/
+.qsys_edit/
+hps_isw_handoff/
+sys/vip/
+sys/*_sim/
+rtl/*_sim/
+new_rtl_netlist/
+old_rtl_netlist/
+build_id.v
+c5_pin_model_dump.txt
+PLLJ_PLLSPE_INFO.txt
+*.sof
+*.rbf
+*.pof
+*.qws
+*.ddb
+*.cmp
+*.sip
+*.spd
+*.bsf
+*.sopcinfo
+*.bak
+*.orig
+*.rej
+*~
