@@ -25,7 +25,8 @@
 // Writes to the SDRAM are fire-and-forget strobes; the SDRAM controller
 // buffers them and returns sdram_wait (wired to hps_io's ioctl_wait)
 // when its input buffer nears full. The 0x1400/0xFFFF fill runs after
-// the download ends, self-paced at one word every 8 clocks.
+// the download ends, paced at one word every 8 clocks and stalled on
+// sdram_wait so no fill write is ever dropped.
 //
 // rom_loaded only asserts if the marker was actually found, so a wrong
 // file never starts the CPU.
@@ -48,8 +49,15 @@ module rom_loader (
     output reg [20:0] sdram_addr,
     output reg [15:0] sdram_dout,
 
+    // SDRAM write-FIFO backpressure (b_wait from the SDRAM controller).
+    // Payload writes are throttled at the hps_io level (ioctl_wait); the
+    // fill passes below stall on this signal so no fill write is ever
+    // dropped.
+    input             sdram_wait,
+
     // Status
     output reg        rom_loaded,  // Image valid; boot may start
+    output reg        load_failed, // Download ended without the marker
     output reg        loading      // Download or fill in progress
 );
 
@@ -135,9 +143,10 @@ module rom_loader (
             state      <= S_IDLE;
             sdram_wr   <= 1'b0;
             sdram_addr <= 21'd0;
-            sdram_dout <= 16'd0;
-            rom_loaded <= 1'b0;
-            loading    <= 1'b0;
+            sdram_dout  <= 16'd0;
+            rom_loaded  <= 1'b0;
+            load_failed <= 1'b0;
+            loading     <= 1'b0;
             sh         <= 64'd0;
             ncnt       <= 4'd0;
             tfl_ok     <= 1'b0;
@@ -156,10 +165,11 @@ module rom_loader (
 
             if (dl_start) begin
                 // (Re)start: a new OS image download begins
-                state      <= S_SCAN;
-                loading    <= 1'b1;
-                rom_loaded <= 1'b0;
-                sh         <= 64'd0;
+                state       <= S_SCAN;
+                loading     <= 1'b1;
+                rom_loaded  <= 1'b0;
+                load_failed <= 1'b0;
+                sh          <= 64'd0;
                 ncnt       <= 4'd0;
                 tfl_ok     <= 1'b0;
                 mf         <= 1'b0;
@@ -252,7 +262,8 @@ module rom_loader (
                         if (!ioctl_download) begin
                             // Download finished: flush a dangling byte,
                             // remember the tail fill boundary, then fill.
-                            found <= t_mf;
+                            found       <= t_mf;
+                            load_failed <= ~t_mf;
                             if (t_hp) begin
                                 sdram_wr   <= 1'b1;
                                 sdram_addr <= t_waddr;
@@ -267,10 +278,13 @@ module rom_loader (
                     end
 
                     // -----------------------------------------------------
-                    // Fill [0 .. 0x8FFF] with 0x1400 (unmapped pattern)
+                    // Fill [0 .. 0x8FFF] with 0x1400 (unmapped pattern).
+                    // The SDRAM controller needs ~9 clocks per write while
+                    // the pacing tick fires every 8, so stall on sdram_wait
+                    // or writes would be silently dropped.
                     S_FILL1: begin
-                        fdiv <= fdiv + 3'd1;
-                        if (fill_tick) begin
+                        if (!sdram_wait) fdiv <= fdiv + 3'd1;
+                        if (fill_tick && !sdram_wait) begin
                             sdram_wr   <= 1'b1;
                             sdram_addr <= fill_addr;
                             sdram_dout <= 16'h1400;
@@ -292,8 +306,8 @@ module rom_loader (
                     // -----------------------------------------------------
                     // Fill [payload_end .. end of flash] with 0xFFFF
                     S_FILL2: begin
-                        fdiv <= fdiv + 3'd1;
-                        if (fill_tick) begin
+                        if (!sdram_wait) fdiv <= fdiv + 3'd1;
+                        if (fill_tick && !sdram_wait) begin
                             sdram_wr   <= 1'b1;
                             sdram_addr <= fill_addr;
                             sdram_dout <= 16'hFFFF;

@@ -34,6 +34,16 @@ module video_scaler (
     input       [1:0] scale_sel,  // 0 = 4x, 1 = 3x, 2 = 2x, 3 = 1x
     input       [1:0] color_sel,  // 0 = green, 1 = blue, 2 = amber, 3 = B&W
 
+    // Boot-chain diagnostic (from TI89.sv). While the OS has not fully
+    // booted, the entire active area is painted with a solid color so
+    // the load/boot state can be read off the TV:
+    //   0 = blue   - no OS image loaded yet
+    //   1 = orange - OS image download / fill in progress
+    //   2 = red    - download finished but the image was not recognized
+    //   3 = violet - image accepted, boot copy / CPU start in progress
+    //   4 = normal palette raster (boot_done)
+    input       [2:0] boot_status,
+
     // VGA output (directly to the emu module outputs)
     output reg        ce_pix,     // Output pixel strobe (based on clk)
     output reg  [7:0] R,
@@ -197,6 +207,29 @@ module video_scaler (
     wire vs_area = (ov >= vs_start) && (ov < vs_end);
 
     wire [23:0] pix_rgb = pix_state ? fg_rgb : bg_rgb;
+
+    // =========================================================================
+    // Boot-status diagnostic fill
+    // =========================================================================
+    // Paint the whole active area with a saturated color per boot_status.
+    // This can never hide real LCD content: lcd_on (and therefore any real
+    // pixel stream) can only become active after boot_done, at which point
+    // boot_status is 4 and the normal palette raster is shown. Sync, DE and
+    // ce_pix timing are untouched, so ascal keeps locking onto the raster.
+
+    reg [23:0] status_rgb;
+
+    always @(*) begin
+        case (boot_status)
+            3'd0:    status_rgb = 24'h2060D0; // blue   - no image loaded
+            3'd1:    status_rgb = 24'hF08000; // orange - loading image
+            3'd2:    status_rgb = 24'hD02020; // red    - image not recognized
+            3'd3:    status_rgb = 24'h9030D0; // violet - booting
+            default: status_rgb = 24'h000000; // unused (4+ = normal raster)
+        endcase
+    end
+
+    wire [23:0] draw_rgb = (boot_status != 3'd4) ? status_rgb : pix_rgb;
 
     always @(posedge clk) begin
         if (reset) begin
