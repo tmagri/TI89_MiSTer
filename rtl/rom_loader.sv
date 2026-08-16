@@ -4,29 +4,41 @@
 //
 // Loads a .89u FLASH upgrade file streamed from hps_io (WIDE=1 mode)
 // into the 4MB SDRAM that backs the calculator's flash window
-// ($800000-$BFFFFF).
+// ($800000-$BFFFFF), building the same flash image the n-89/TiEmu
+// converter builds from an upgrade file (references/n-89,
+// n-89/src/convert.rs):
 //
-// .89u format handling follows the reference simulator (v12.js
+//   [0x000..0x0FF]   mirror of the first 256 bytes of the boot block
+//                    (payload bytes 0x88..0x187), as in a real dump
+//   [0x100..0x103]   0xFEEDBABE
+//   [0x104..0x107]   HWPB pointer 0x00800108
+//   [0x108..0x121]   hardware parameter block: len=24, hardware ID=9
+//                    (TI-89 Titanium), revision=2, boot 1.1.1,
+//                    gate array=3 (HW3)
+//   [0x122..0x11FFF] 0xFFFF (erased flash)
+//   [0x12000..]      the OS payload, then 0xFFFF to the end of flash
+//
+// .89u parsing follows the reference simulator (v12.js
 // handle_newromready):
 //
 //   * The file must start with the "**TIFL**" signature.
 //   * The stream is scanned for the ASCII marker "basecode"; the OS
-//     payload starts marker_pos + 0x3D bytes into the file.
-//   * The payload is stored at SDRAM byte offset 0x12000 (word address
-//     0x9000) — where the hardware expects the OS base code — as
-//     big-endian words: word = {file[x], file[x+1]}.
-//   * Words below 0x12000 are filled with 0x1400 and words above the
-//     payload with 0xFFFF, exactly like the reference model, so reads
-//     outside the image return the correct values.
+//     payload starts marker_pos + 0x3D bytes into the file (for a
+//     standard .89u this is file offset 0x4E, right after the TIFL
+//     header, matching n-89).
+//
+// The mem_ctrl boot FSM then copies 128 words from flash byte 0x12088
+// to RAM $000000; the first two longs there are the initial SSP and PC
+// (v12.js reset_calculator).
 //
 // WIDE-mode byte order: hps_io presents the byte at the (even) address
 // on ioctl_dout[7:0] and the following byte on ioctl_dout[15:8].
 //
-// Writes to the SDRAM are fire-and-forget strobes; the SDRAM controller
-// buffers them and returns sdram_wait (wired to hps_io's ioctl_wait)
-// when its input buffer nears full. The 0x1400/0xFFFF fill runs after
-// the download ends, paced at one word every 8 clocks and stalled on
-// sdram_wait so no fill write is ever dropped.
+// Payload writes are throttled at the hps_io level (ioctl_wait is wired
+// to the SDRAM controller's b_wait). The fill passes pace themselves at
+// one word every 8 clocks and additionally stall on sdram_wait so no
+// fill write is ever dropped (the SDRAM controller needs ~9 clocks per
+// write).
 //
 // rom_loaded only asserts if the marker was actually found, so a wrong
 // file never starts the CPU.
@@ -50,9 +62,6 @@ module rom_loader (
     output reg [15:0] sdram_dout,
 
     // SDRAM write-FIFO backpressure (b_wait from the SDRAM controller).
-    // Payload writes are throttled at the hps_io level (ioctl_wait); the
-    // fill passes below stall on this signal so no fill write is ever
-    // dropped.
     input             sdram_wait,
 
     // Status
@@ -69,16 +78,21 @@ module rom_loader (
     localparam [63:0] MARK_BASE  = 64'h62617365636F6465; // "basecode"
 
     localparam [20:0] PAYLOAD_START = 21'h009000; // word address of byte 0x12000
-    localparam [20:0] HEAD_LAST     = 21'h008FFF; // last word of the 0x1400 fill
+    localparam [20:0] BOOT_FIRST    = 21'h009044; // payload word holding byte 0x88
+    localparam [20:0] BOOT_LAST     = 21'h0090C3; // payload word holding byte 0x187
+    localparam [20:0] BOOT_TOP      = 21'h00007F; // last mirrored boot-block word
+    localparam [20:0] HDR_LAST      = 21'h000090; // last synthesized header word
+    localparam [20:0] HEAD_LAST     = 21'h008FFF; // last word of the head fill
     localparam [20:0] FLASH_LAST    = 21'h1FFFFF; // last word of the 4MB flash
 
     localparam [5:0]  SKIP_BYTES = 6'd53; // 0x3D - 8 ("basecode" already consumed)
 
     localparam [2:0] S_IDLE  = 3'd0;
     localparam [2:0] S_SCAN  = 3'd1;
-    localparam [2:0] S_FILL1 = 3'd2; // 0x1400 into [0 .. 0x8FFF]
-    localparam [2:0] S_FILL2 = 3'd3; // 0xFFFF into [payload_end .. 0x1FFFFF]
-    localparam [2:0] S_DONE  = 3'd4;
+    localparam [2:0] S_FLUSH = 3'd2; // flush a dangling byte (sdram_wait aware)
+    localparam [2:0] S_FILL1 = 3'd3; // header + 0xFFFF into [0 .. 0x8FFF]
+    localparam [2:0] S_FILL2 = 3'd4; // 0xFFFF into [payload_end .. 0x1FFFFF]
+    localparam [2:0] S_DONE  = 3'd5;
 
     reg [2:0] state;
 
@@ -117,6 +131,61 @@ module rom_loader (
     wire       fill_tick = (fdiv == 3'd7);
 
     // =========================================================================
+    // Boot block buffer
+    // =========================================================================
+    // The 128 payload words holding boot-block bytes 0x88..0x187 are
+    // captured here during the download and later mirrored into SDRAM
+    // words 0x000..0x07F (flash bytes 0x000..0x0FF), like a real
+    // TI-89 Titanium flash dump.
+
+    reg [15:0] boot_buf [0:127];
+
+    // =========================================================================
+    // Synthesized flash header (SDRAM words 0x80..0x90)
+    // =========================================================================
+    // The TI-89 Titanium OS expects the factory header an .89u upgrade
+    // does not contain; n-89 (convert.rs) and v12.js both synthesize
+    // it: 0xFEEDBABE at 0x100, the HWPB pointer at 0x104 and the HWPB
+    // itself at 0x108.
+
+    reg [15:0] hdr_word;
+
+    always @(*) begin
+        case (fill_addr[6:0]) // fill_addr - 0x80 for 0x80..0x90
+            7'd0:    hdr_word = 16'hFEED; // 0x100: FEEDBABE
+            7'd1:    hdr_word = 16'hBABE;
+            7'd2:    hdr_word = 16'h0080; // 0x104: HWPB pointer -> $800108
+            7'd3:    hdr_word = 16'h0108;
+            7'd4:    hdr_word = 16'h0018; // 0x108: HWPB len = 24
+            7'd5:    hdr_word = 16'h0000; // 0x10A: hardware ID = 9
+            7'd6:    hdr_word = 16'h0009; //      (TI-89 Titanium)
+            7'd7:    hdr_word = 16'h0000; // 0x10E: hardware revision = 2
+            7'd8:    hdr_word = 16'h0002;
+            7'd9:    hdr_word = 16'h0000; // 0x112: boot major = 1
+            7'd10:   hdr_word = 16'h0001;
+            7'd11:   hdr_word = 16'h0000; // 0x116: boot revision = 1
+            7'd12:   hdr_word = 16'h0001;
+            7'd13:   hdr_word = 16'h0000; // 0x11A: boot build = 1
+            7'd14:   hdr_word = 16'h0001;
+            7'd15:   hdr_word = 16'h0000; // 0x11E: gate array = 3 (HW3)
+            default: hdr_word = 16'h0003; //      (fill_addr == 0x90)
+        endcase
+    end
+
+    // Head-fill data mux: mirrored boot block, then synthesized header,
+    // then erased flash.
+    reg [15:0] fill_data;
+
+    always @(*) begin
+        if (fill_addr <= BOOT_TOP)
+            fill_data = boot_buf[fill_addr[6:0]];
+        else if (fill_addr <= HDR_LAST)
+            fill_data = hdr_word;
+        else
+            fill_data = 16'hFFFF;
+    end
+
+    // =========================================================================
     // Main FSM
     // =========================================================================
 
@@ -140,26 +209,26 @@ module rom_loader (
 
     always @(posedge clk) begin
         if (reset) begin
-            state      <= S_IDLE;
-            sdram_wr   <= 1'b0;
-            sdram_addr <= 21'd0;
+            state       <= S_IDLE;
+            sdram_wr    <= 1'b0;
+            sdram_addr  <= 21'd0;
             sdram_dout  <= 16'd0;
             rom_loaded  <= 1'b0;
             load_failed <= 1'b0;
             loading     <= 1'b0;
-            sh         <= 64'd0;
-            ncnt       <= 4'd0;
-            tfl_ok     <= 1'b0;
-            mf         <= 1'b0;
-            skip       <= 6'd0;
-            pay        <= 1'b0;
-            pend       <= 8'd0;
-            hp         <= 1'b0;
-            waddr      <= PAYLOAD_START;
-            fill_addr  <= 21'd0;
-            fill_start <= 21'd0;
-            found      <= 1'b0;
-            fdiv       <= 3'd0;
+            sh          <= 64'd0;
+            ncnt        <= 4'd0;
+            tfl_ok      <= 1'b0;
+            mf          <= 1'b0;
+            skip        <= 6'd0;
+            pay         <= 1'b0;
+            pend        <= 8'd0;
+            hp          <= 1'b0;
+            waddr       <= PAYLOAD_START;
+            fill_addr   <= 21'd0;
+            fill_start  <= 21'd0;
+            found       <= 1'b0;
+            fdiv        <= 3'd0;
         end else begin
             sdram_wr <= 1'b0;
 
@@ -170,14 +239,14 @@ module rom_loader (
                 rom_loaded  <= 1'b0;
                 load_failed <= 1'b0;
                 sh          <= 64'd0;
-                ncnt       <= 4'd0;
-                tfl_ok     <= 1'b0;
-                mf         <= 1'b0;
-                skip       <= 6'd0;
-                pay        <= 1'b0;
-                hp         <= 1'b0;
-                waddr      <= PAYLOAD_START;
-                found      <= 1'b0;
+                ncnt        <= 4'd0;
+                tfl_ok      <= 1'b0;
+                mf          <= 1'b0;
+                skip        <= 6'd0;
+                pay         <= 1'b0;
+                hp          <= 1'b0;
+                waddr       <= PAYLOAD_START;
+                found       <= 1'b0;
             end else begin
                 case (state)
                     // -----------------------------------------------------
@@ -256,21 +325,37 @@ module rom_loader (
                                 sdram_wr   <= 1'b1;
                                 sdram_addr <= t_addr;
                                 sdram_dout <= t_din;
+                                // Capture the boot-block words for the
+                                // 0x000 mirror
+                                if ((t_addr >= BOOT_FIRST) &&
+                                    (t_addr <= BOOT_LAST))
+                                    boot_buf[t_addr[6:0] - 7'h44] <= t_din;
                             end
                         end
 
                         if (!ioctl_download) begin
-                            // Download finished: flush a dangling byte,
-                            // remember the tail fill boundary, then fill.
+                            // Download finished: defer the dangling byte
+                            // flush to S_FLUSH so it respects sdram_wait.
                             found       <= t_mf;
                             load_failed <= ~t_mf;
-                            if (t_hp) begin
+                            state       <= S_FLUSH;
+                        end
+                    end
+
+                    // -----------------------------------------------------
+                    // Flush a dangling odd byte, then start the head fill
+                    S_FLUSH: begin
+                        if (!sdram_wait) begin
+                            if (hp) begin
                                 sdram_wr   <= 1'b1;
-                                sdram_addr <= t_waddr;
-                                sdram_dout <= {t_pend, 8'hFF};
-                                fill_start <= t_waddr + 21'd1;
+                                sdram_addr <= waddr;
+                                sdram_dout <= {pend, 8'hFF};
+                                if ((waddr >= BOOT_FIRST) &&
+                                    (waddr <= BOOT_LAST))
+                                    boot_buf[waddr[6:0] - 7'h44] <= {pend, 8'hFF};
+                                fill_start <= waddr + 21'd1;
                             end else begin
-                                fill_start <= t_waddr;
+                                fill_start <= waddr;
                             end
                             fill_addr <= 21'd0;
                             state     <= S_FILL1;
@@ -278,16 +363,17 @@ module rom_loader (
                     end
 
                     // -----------------------------------------------------
-                    // Fill [0 .. 0x8FFF] with 0x1400 (unmapped pattern).
-                    // The SDRAM controller needs ~9 clocks per write while
-                    // the pacing tick fires every 8, so stall on sdram_wait
+                    // Fill [0 .. 0x8FFF]: mirrored boot block, synthesized
+                    // header, then 0xFFFF (erased flash). The SDRAM
+                    // controller needs ~9 clocks per write while the
+                    // pacing tick fires every 8, so stall on sdram_wait
                     // or writes would be silently dropped.
                     S_FILL1: begin
                         if (!sdram_wait) fdiv <= fdiv + 3'd1;
                         if (fill_tick && !sdram_wait) begin
                             sdram_wr   <= 1'b1;
                             sdram_addr <= fill_addr;
-                            sdram_dout <= 16'h1400;
+                            sdram_dout <= fill_data;
                             if (fill_addr == HEAD_LAST) begin
                                 fill_addr <= fill_start;
                                 if (fill_start > FLASH_LAST) begin

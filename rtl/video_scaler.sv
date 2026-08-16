@@ -243,9 +243,9 @@ module video_scaler (
         end else begin
             ce_pix <= out_tick && started;
             if (out_tick && started) begin
-                R     <= de_area ? pix_rgb[23:16] : 8'd0;
-                G     <= de_area ? pix_rgb[15:8]  : 8'd0;
-                B     <= de_area ? pix_rgb[7:0]   : 8'd0;
+                R     <= de_area ? draw_rgb[23:16] : 8'd0;
+                G     <= de_area ? draw_rgb[15:8]  : 8'd0;
+                B     <= de_area ? draw_rgb[7:0]   : 8'd0;
                 HSync <= hs_area;
                 VSync <= vs_area;
                 DE    <= de_area;

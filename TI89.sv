@@ -352,6 +352,7 @@ module emu
 
 	wire        rom_loaded;   // OS image valid in SDRAM
 	wire        loading;      // download or fill in progress
+	wire        load_failed;  // download ended without a valid signature
 	wire        ld_wr;
 	wire [20:0] ld_addr;      // Word address
 	wire [15:0] ld_dout;
@@ -368,7 +369,9 @@ module emu
 		.sdram_wr(ld_wr),
 		.sdram_addr(ld_addr),
 		.sdram_dout(ld_dout),
+		.sdram_wait(sdram_b_wait),
 		.rom_loaded(rom_loaded),
+		.load_failed(load_failed),
 		.loading(loading)
 	);
 
@@ -728,6 +731,18 @@ module emu
 		.pixel_y()
 	);
 
+	// Boot-chain diagnostic for the video_scaler's status fill:
+	//   0 blue   = no OS image loaded yet
+	//   1 orange = OS image download / fill in progress
+	//   2 red    = download finished but the image was not recognized
+	//   3 violet = image accepted, boot copy / CPU start in progress
+	//   4        = boot_done, show the normal palette raster
+	wire [2:0] boot_status = loading     ? 3'd1 :
+	                         load_failed ? 3'd2 :
+	                         !rom_loaded ? 3'd0 :
+	                         !boot_done  ? 3'd3 :
+	                                     3'd4;
+
 	video_scaler video_scaler
 	(
 		.clk(clk_sys),
@@ -738,6 +753,7 @@ module emu
 
 		.scale_sel(status[5:4]),
 		.color_sel(status[3:2]),
+		.boot_status(boot_status),
 
 		.ce_pix(CE_PIXEL),
 		.R(VGA_R),
