@@ -21,6 +21,11 @@
 // the last line of vertical blank), then shifts pixels out serially at
 // the LCD pixel clock (clk / 48 ≈ 1.33 MHz → ~60 Hz frame rate).
 //
+// The RAM lives in the MiSTer SDRAM chip (see mem_ctrl), so reads are
+// not single-cycle: ram_req is raised with a stable ram_addr and held
+// until mem_ctrl pulses ram_ack; ram_data is valid in the same cycle
+// as ram_ack.
+//
 // Pixels are ordered MSB-first within each 16-bit word (68k big-endian).
 //
 
@@ -35,11 +40,13 @@ module lcd_ctrl (
     input   [3:0] lcd_contrast,  // Contrast level
     input         lcd_on,        // LCD enabled
 
-    // RAM DMA interface (reads port B of the dual-port RAM)
-    // ram_addr is held stable for one cycle before ram_data is valid
-    // (synchronous RAM read: address this cycle, data next cycle).
+    // RAM DMA interface (SDRAM-backed, request/acknowledge handshake)
+    // ram_req is raised with a stable ram_addr and held high until
+    // ram_ack pulses; ram_data is valid in the ack cycle.
     output reg [17:0] ram_addr,  // Byte address within 256KB RAM (even)
     input      [15:0] ram_data,  // 16-bit data from RAM
+    output reg        ram_req,   // Read request, held until ram_ack
+    input             ram_ack,   // One-cycle completion pulse
 
     // Video output interface (directly to scaler)
     output reg        pixel_out,  // 1 = pixel on, 0 = pixel off
@@ -117,13 +124,14 @@ module lcd_ctrl (
     // =========================================================================
     // Row N is fetched during the horizontal blanking of row N-1.
     // Row 0 is fetched during the last line of vertical blanking.
-    // Each fetch = 10 word reads × 3 cycles = 30 master clocks, far less
+    // Each fetch = 10 word reads; a RAM read now round-trips through
+    // SDRAM (~8-10 cycles per word through mem_ctrl's arbiter), so a
+    // whole row takes well under 200 master clocks — still far less
     // than one horizontal blank period (40 pixels × 48 = 1920 clocks).
 
     localparam [1:0] DMA_IDLE  = 2'd0;
-    localparam [1:0] DMA_FETCH = 2'd1; // present address to RAM
-    localparam [1:0] DMA_WAIT  = 2'd2; // RAM read latency (1 cycle)
-    localparam [1:0] DMA_STORE = 2'd3; // latch ram_data into line_buf
+    localparam [1:0] DMA_FETCH = 2'd1; // present address, raise ram_req
+    localparam [1:0] DMA_REQ   = 2'd2; // wait for ram_ack
 
     reg [1:0]  dma_state;
     reg [3:0]  dma_word;
@@ -145,6 +153,7 @@ module lcd_ctrl (
             dma_word  <= 4'd0;
             dma_addr  <= 18'd0;
             ram_addr  <= 18'd0;
+            ram_req   <= 1'b0;
         end else begin
             case (dma_state)
                 DMA_IDLE: begin
@@ -156,22 +165,24 @@ module lcd_ctrl (
                 end
 
                 DMA_FETCH: begin
-                    // Present word address; RAM data available next cycle
+                    // Present the word address and raise the request;
+                    // mem_ctrl latches it, so the address must stay
+                    // stable while ram_req is high.
                     ram_addr  <= dma_addr + {13'd0, dma_word, 1'b0};
-                    dma_state <= DMA_WAIT;
+                    ram_req   <= 1'b1;
+                    dma_state <= DMA_REQ;
                 end
 
-                DMA_WAIT: begin
-                    dma_state <= DMA_STORE;
-                end
-
-                DMA_STORE: begin
-                    line_buf[dma_word] <= ram_data;
-                    if (dma_word >= 4'd9) begin
-                        dma_state <= DMA_IDLE;
-                    end else begin
-                        dma_word  <= dma_word + 4'd1;
-                        dma_state <= DMA_FETCH;
+                DMA_REQ: begin
+                    if (ram_ack) begin
+                        ram_req            <= 1'b0;
+                        line_buf[dma_word] <= ram_data;
+                        if (dma_word >= 4'd9) begin
+                            dma_state <= DMA_IDLE;
+                        end else begin
+                            dma_word  <= dma_word + 4'd1;
+                            dma_state <= DMA_FETCH;
+                        end
                     end
                 end
             endcase

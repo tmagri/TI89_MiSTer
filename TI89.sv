@@ -376,15 +376,16 @@ module emu
 	);
 
 	///////////////////////////////////////////////////////////////////////////
-	// SDRAM (backs the 4MB flash window)
+	// SDRAM (backs the 4MB flash window and the 256KB calculator RAM)
 	///////////////////////////////////////////////////////////////////////////
 
-	// Port A: flash controller traffic
-	wire [21:0] fa_addr;
-	wire [15:0] fa_wdata;
-	wire        fa_rd, fa_wr, fa_uds_n, fa_lds_n;
-	wire [15:0] fa_rdata;
-	wire        fa_ready;
+	// Port A: traffic from mem_ctrl's arbiter (flash_ctrl + RAM clients)
+	wire [24:0] sd_addr;
+	wire [15:0] sd_wdata;
+	wire        sd_rd, sd_wr, sd_uds_n, sd_lds_n;
+	wire [15:0] sd_rdata;
+	wire        sd_ready;
+	wire        sdram_init_done;
 
 	sdram sdram
 	(
@@ -403,32 +404,40 @@ module emu
 		.SDRAM_nRAS(SDRAM_nRAS),
 		.SDRAM_nWE(SDRAM_nWE),
 
-		.a_addr(fa_addr),
-		.a_wdata(fa_wdata),
-		.a_rd(fa_rd),
-		.a_wr(fa_wr),
-		.a_uds_n(fa_uds_n),
-		.a_lds_n(fa_lds_n),
-		.a_rdata(fa_rdata),
-		.a_ready(fa_ready),
+		.a_addr(sd_addr),
+		.a_wdata(sd_wdata),
+		.a_rd(sd_rd),
+		.a_wr(sd_wr),
+		.a_uds_n(sd_uds_n),
+		.a_lds_n(sd_lds_n),
+		.a_rdata(sd_rdata),
+		.a_ready(sd_ready),
 
 		.b_addr(ld_addr),
 		.b_wdata(ld_dout),
 		.b_wr(ld_wr),
 		.b_wait(sdram_b_wait),
 
-		.init_done()
+		.init_done(sdram_init_done)
 	);
 
 	///////////////////////////////////////////////////////////////////////////
 	// Flash controller (Sharp WSM over the SDRAM-backed flash window)
 	///////////////////////////////////////////////////////////////////////////
 
+	// Command side comes from mem_ctrl's bus FSM; the controller's own
+	// SDRAM-side accesses go back through mem_ctrl's port A arbiter.
 	wire [21:0] flash_addr;
 	wire [15:0] flash_wdata;
 	wire        flash_rd, flash_wr, flash_uds_n, flash_lds_n;
 	wire [15:0] flash_rdata;
 	wire        flash_ready;
+
+	wire [21:0] fl_addr;
+	wire [15:0] fl_wdata;
+	wire        fl_rd, fl_wr, fl_uds_n, fl_lds_n;
+	wire [15:0] fl_rdata;
+	wire        fl_ready;
 
 	flash_ctrl flash_ctrl
 	(
@@ -444,14 +453,14 @@ module emu
 		.flash_rdata(flash_rdata),
 		.flash_ready(flash_ready),
 
-		.sd_addr(fa_addr),
-		.sd_wdata(fa_wdata),
-		.sd_rd(fa_rd),
-		.sd_wr(fa_wr),
-		.sd_uds_n(fa_uds_n),
-		.sd_lds_n(fa_lds_n),
-		.sd_rdata(fa_rdata),
-		.sd_ready(fa_ready)
+		.sd_addr(fl_addr),
+		.sd_wdata(fl_wdata),
+		.sd_rd(fl_rd),
+		.sd_wr(fl_wr),
+		.sd_uds_n(fl_uds_n),
+		.sd_lds_n(fl_lds_n),
+		.sd_rdata(fl_rdata),
+		.sd_ready(fl_ready)
 	);
 
 	///////////////////////////////////////////////////////////////////////////
@@ -468,6 +477,8 @@ module emu
 
 	wire [17:0] lcd_ram_addr;
 	wire [15:0] lcd_ram_data;
+	wire        lcd_ram_req;
+	wire        lcd_ram_ack;
 
 	wire  [7:0] io_addr;
 	wire [15:0] io_wdata;
@@ -475,6 +486,7 @@ module emu
 	wire        io_rd, io_wr;
 	wire  [1:0] io_bank;
 	wire        io_uds_n, io_lds_n;
+	wire        protect; // flash protection state (mem_ctrl hwprot)
 
 	mem_ctrl mem_ctrl
 	(
@@ -482,6 +494,7 @@ module emu
 		.reset(reset),
 
 		.rom_loaded(rom_loaded),
+		.init_done(sdram_init_done),
 		.boot_done(boot_done),
 
 		.cpu_addr(cpu_addr),
@@ -495,6 +508,8 @@ module emu
 
 		.lcd_ram_addr(lcd_ram_addr),
 		.lcd_ram_data(lcd_ram_data),
+		.lcd_ram_req(lcd_ram_req),
+		.lcd_ram_ack(lcd_ram_ack),
 
 		.flash_addr(flash_addr),
 		.flash_wdata(flash_wdata),
@@ -505,6 +520,24 @@ module emu
 		.flash_lds_n(flash_lds_n),
 		.flash_ready(flash_ready),
 
+		.fl_sd_addr(fl_addr),
+		.fl_sd_wdata(fl_wdata),
+		.fl_sd_rd(fl_rd),
+		.fl_sd_wr(fl_wr),
+		.fl_sd_uds_n(fl_uds_n),
+		.fl_sd_lds_n(fl_lds_n),
+		.fl_sd_rdata(fl_rdata),
+		.fl_sd_ready(fl_ready),
+
+		.sd_addr(sd_addr),
+		.sd_wdata(sd_wdata),
+		.sd_rd(sd_rd),
+		.sd_wr(sd_wr),
+		.sd_uds_n(sd_uds_n),
+		.sd_lds_n(sd_lds_n),
+		.sd_rdata(sd_rdata),
+		.sd_ready(sd_ready),
+
 		.io_addr(io_addr),
 		.io_wdata(io_wdata),
 		.io_rdata(io_rdata),
@@ -512,7 +545,8 @@ module emu
 		.io_wr(io_wr),
 		.io_bank(io_bank),
 		.io_uds_n(io_uds_n),
-		.io_lds_n(io_lds_n)
+		.io_lds_n(io_lds_n),
+		.protect(protect)
 	);
 
 	///////////////////////////////////////////////////////////////////////////
@@ -561,6 +595,7 @@ module emu
 		.bank(io_bank),
 		.uds_n(io_uds_n),
 		.lds_n(io_lds_n),
+		.protect(protect),
 
 		.kbd_row_mask(kbd_row_mask),
 		.kbd_col_data(kbd_col_data),
@@ -720,6 +755,8 @@ module emu
 
 		.ram_addr(lcd_ram_addr),
 		.ram_data(lcd_ram_data),
+		.ram_req(lcd_ram_req),
+		.ram_ack(lcd_ram_ack),
 
 		.pixel_out(pixel_out),
 		.pixel_valid(pixel_valid),

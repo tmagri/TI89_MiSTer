@@ -1,13 +1,18 @@
 //
-// sdram.sv — SDRAM controller for the TI-89 flash memory
+// sdram.sv — SDRAM controller for the TI-89 core
 // TI-89 MiSTer Core
 //
-// Backs the calculator's 4MB flash window ($800000-$BFFFFF) with the
-// DE10-Nano's 32MB SDRAM (IS42S16320D-7TL, 16-bit). Clock: 64 MHz.
+// Backs the calculator's memories with the DE10-Nano's 32MB SDRAM
+// (IS42S16160G, 16-bit, 4 banks x 8192 rows x 512 columns). Clock: 64 MHz.
+//
+// Memory layout (set by mem_ctrl, which owns port A):
+//   byte $000000-$3FFFFF : OS image / flash window (4 MB)
+//   byte $400000-$43FFFF : calculator RAM (256 KB)
 //
 // Two request ports:
 //
-//   Port A — CPU-side access (from flash_ctrl), latched request:
+//   Port A — CPU-side access (from mem_ctrl's arbiter, which multiplexes
+//     flash_ctrl and the RAM clients), latched request:
 //     a_rd / a_wr strobes latch address/data/byte-lanes; the controller
 //     services one request at a time and pulses a_ready on completion
 //     (a_rdata valid for reads). Requesters must wait for a_ready
@@ -20,8 +25,8 @@
 // Port A has priority; port B traffic only exists while the CPU is held
 // in reset, so in practice the ports never contend.
 //
-// Address mapping (word address w = byte_addr[21:1], 21 bits for 4MB):
-//   bank = w[20:19], row = w[18:6] (13 bits), column = w[5:0] (6 bits)
+// Address mapping (word address w = byte_addr[24:1], full 32 MB):
+//   bank = w[23:22], row = w[21:9] (13 bits), column = w[8:0] (9 bits)
 //
 // Every access is a full row cycle: ACTIVATE -> READ/WRITE -> explicit
 // PRECHARGE -> tRP, so back-to-back accesses never violate precharge or
@@ -51,7 +56,7 @@ module sdram (
     output        SDRAM_nWE,
 
     // Port A: CPU / flash controller access (byte address, word aligned)
-    input  [21:0] a_addr,
+    input  [24:0] a_addr,
     input  [15:0] a_wdata,
     input         a_rd,        // One-cycle read strobe
     input         a_wr,        // One-cycle write strobe
@@ -74,7 +79,8 @@ module sdram (
     // =========================================================================
 
     localparam [16:0] PWRUP_WAIT = 17'd20000; // ~310 us power stabilization
-    localparam [15:0] REF_PERIOD = 16'd900;   // ~14 us between refreshes
+    localparam [15:0] REF_PERIOD = 16'd480;   // ~7.5 us between refreshes
+                                              // (8192 rows must refresh in 64 ms)
     localparam  [3:0] INIT_REFS  = 4'd8;      // refreshes during init
 
     // SDRAM commands {nCS, nRAS, nCAS, nWE}
@@ -126,7 +132,7 @@ module sdram (
 
     reg        pa_valid;
     reg        pa_wr;
-    reg [20:0] pa_waddr;   // Word address
+    reg [23:0] pa_waddr;   // Word address
     reg [15:0] pa_wdata;
     reg        pa_uds_n, pa_lds_n;
 
@@ -191,7 +197,7 @@ module sdram (
 
     wire        src_valid = pa_valid || !fifo_empty;
     wire        src_wr    = pa_valid ? pa_wr  : 1'b1;
-    wire [20:0] src_addr  = pa_valid ? pa_waddr : fifo_addr[fifo_rptr[2:0]];
+    wire [23:0] src_addr  = pa_valid ? pa_waddr : {3'b000, fifo_addr[fifo_rptr[2:0]]};
     wire [15:0] src_data  = pa_valid ? pa_wdata : fifo_data[fifo_rptr[2:0]];
     wire        src_uds_n = pa_valid ? pa_uds_n : 1'b0;
     wire        src_lds_n = pa_valid ? pa_lds_n : 1'b0;
@@ -201,7 +207,7 @@ module sdram (
     reg         cur_port_a;
     reg         cur_uds_n, cur_lds_n;
     reg   [1:0] cur_bank;
-    reg   [5:0] cur_col;
+    reg   [8:0] cur_col;
     reg  [15:0] cur_data;
 
     // =========================================================================
@@ -226,7 +232,7 @@ module sdram (
             a_ready    <= 1'b0;
             pa_valid   <= 1'b0;
             pa_wr      <= 1'b0;
-            pa_waddr   <= 21'd0;
+            pa_waddr   <= 24'd0;
             pa_wdata   <= 16'd0;
             pa_uds_n   <= 1'b1;
             pa_lds_n   <= 1'b1;
@@ -236,7 +242,7 @@ module sdram (
             cur_uds_n  <= 1'b1;
             cur_lds_n  <= 1'b1;
             cur_bank   <= 2'd0;
-            cur_col    <= 6'd0;
+            cur_col    <= 9'd0;
             cur_data   <= 16'd0;
         end else begin
             cmd     <= CMD_NOP;
@@ -249,7 +255,7 @@ module sdram (
             if ((a_rd || a_wr) && !pa_valid) begin
                 pa_valid <= 1'b1;
                 pa_wr    <= a_wr;
-                pa_waddr <= a_addr[21:1];
+                pa_waddr <= a_addr[24:1];
                 pa_wdata <= a_wdata;
                 pa_uds_n <= a_uds_n;
                 pa_lds_n <= a_lds_n;
@@ -332,12 +338,12 @@ module sdram (
                         cur_uds_n  <= src_uds_n;
                         cur_lds_n  <= src_lds_n;
                         cur_data   <= src_data;
-                        cur_bank   <= src_addr[20:19];
-                        cur_col    <= src_addr[5:0];
+                        cur_bank   <= src_addr[23:22];
+                        cur_col    <= src_addr[8:0];
 
                         cmd    <= CMD_ACT;
-                        s_ba   <= src_addr[20:19];
-                        s_addr <= src_addr[18:6];   // row
+                        s_ba   <= src_addr[23:22];
+                        s_addr <= src_addr[21:9];   // row
                         timer  <= 4'd2;             // tRCD
                         state  <= S_ACT;
 
@@ -366,7 +372,7 @@ module sdram (
                     end else if (cur_wr) begin
                         cmd    <= CMD_WR;
                         s_ba   <= cur_bank;
-                        s_addr <= {6'd0, 1'b0, cur_col}; // A10=0, col A[5:0]
+                        s_addr <= {3'd0, 1'b0, cur_col}; // A10=0, col A[8:0]
                         s_dout <= cur_data;
                         dq_oe  <= 1'b1;
                         s_dqml <= cur_lds_n;       // 0 = byte enabled
@@ -375,7 +381,7 @@ module sdram (
                     end else begin
                         cmd    <= CMD_RD;
                         s_ba   <= cur_bank;
-                        s_addr <= {6'd0, 1'b0, cur_col}; // A10=0, col A[5:0]
+                        s_addr <= {3'd0, 1'b0, cur_col}; // A10=0, col A[8:0]
                         s_dqml <= 1'b0;
                         s_dqmh <= 1'b0;
                         timer  <= 4'd2;            // CAS latency

@@ -9,12 +9,13 @@
 //        gated by OSC2 enable ($600015 bit 1) and master disable (bit 7)
 //   AI2: keyboard scan (set by keyboard controller, acked by writing $60001B)
 //   AI3: every 524288 OSC2 units (16384 base ticks, 1 Hz)
-//        gated by bit 2 and master disable; HW2+ does NOT gate it by the
-//        OSC2 enable bit
+//        gated by bit 2, master disable and (on HW3) the OSC2 enable bit
 //   AI4: link port (not implemented — no link cable)
 //   AI5: programmable timer ($600017) — counts UP on prescaled ticks;
 //        a tick with current value 0 reloads $600017, otherwise the value
-//        increments; an increment past 255 wraps to 0 and raises AI5
+//        increments; AI5 is raised whenever the value is 0 just after the
+//        increment stage — i.e. on the 255->0 wrap, and on every tick when
+//        the reload value is 0 (matches TiEmu hw_update exactly)
 //   AI6: ON key press (set by keyboard controller, acked by writing $60001A)
 //   AI7: protection violation (not implemented)
 //
@@ -148,17 +149,25 @@ module timer_int (
                     if (osc2_en && (timer[5:0] == 6'd0))
                         ai1_pending <= 1'b1;
 
-                    // AI3: every 16384 base ticks; HW2+ does not require
-                    // the OSC2 enable bit
-                    if (ai3_en && (timer[13:0] == 14'd0))
+                    // AI3: every 16384 base ticks. The reference gates it
+                    // on OSC2 enable everywhere except HW2; this core is
+                    // Titanium (HW3), so require osc2_en.
+                    if (ai3_en && osc2_en && (timer[13:0] == 14'd0))
                         ai3_pending <= 1'b1;
                 end
             end
 
-            // Programmable timer (AI5) — counts UP on prescaled ticks
+            // Programmable timer (AI5) — counts UP on prescaled ticks.
+            // Reference (TiEmu hw_update): the increment stage runs first
+            // (0 -> reload from $600017, else ++, wrapping FF -> 00), then
+            // AI5 is raised whenever the value is 0 at that moment. That
+            // means AI5 fires on the FF->00 wrap AND every tick when the
+            // reload value itself is 0.
             if (prescale_tick && master_en && osc2_en && timer_en) begin
                 if (timer_value == 8'd0) begin
                     timer_value <= timer_init;          // reload
+                    if (timer_init == 8'd0)
+                        ai5_pending <= 1'b1;            // value stays 0
                 end else if (timer_value == 8'hFF) begin
                     timer_value <= 8'd0;                // overflow
                     ai5_pending <= 1'b1;

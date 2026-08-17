@@ -30,6 +30,7 @@ module io_ports (
     input   [1:0] bank,         // 0=IO1, 1=IO2, 2=IO3
     input         uds_n,        // Upper byte strobe (valid with rd/wr)
     input         lds_n,        // Lower byte strobe (valid with rd/wr)
+    input         protect,      // Flash protection armed (mem_ctrl hwprot)
 
     // Keyboard controller interface
     output  [9:0] kbd_row_mask, // Row selection mask (10 bits: $600018-$600019)
@@ -77,12 +78,20 @@ module io_ports (
     // =========================================================================
     // Write addresses and byte lanes (68000 bus conventions)
     // =========================================================================
-    // Upper lane always writes the addressed byte; the lower lane writes
-    // addr+1 on a word access, or addr itself on an odd byte access.
+    // mem_ctrl supplies an even-aligned address (A0 is dropped there; for
+    // RAM/flash the byte lanes already encode odd/even). On the I/O bus
+    // the lanes must be decoded back into register offsets:
+    //   word access  (UDS+LDS): upper lane -> addr, lower lane -> addr+1
+    //   even byte    (UDS only):            -> addr
+    //   odd byte     (LDS only):            -> addr+1   (A0 was 1!)
+    // Getting the odd-byte case wrong silently shifts every odd register
+    // ($600005 STOP, $600015.17 timer, $60001D contrast, $70001D screen
+    // enable) by one — which kills the timer interrupt and the STOP
+    // low-power state the OS idles in.
     wire        wr_hi   = wr && !uds_n;
     wire        wr_lo   = wr && !lds_n;
-    wire [8:0]  addr_lo = (!uds_n && !lds_n) ? {1'b0, addr} + 9'd1
-                                             : {1'b0, addr};
+    wire [8:0]  addr_lo = (!lds_n) ? {1'b0, addr} + 9'd1   // word or odd byte
+                                   : {1'b0, addr};
 
     // =========================================================================
     // I/O Bank 1 — $600000 (32 bytes, mirrored, addr & 31)
@@ -159,10 +168,17 @@ module io_ports (
 
     task io2_write(input [5:0] a, input [7:0] d);
     begin
-        case (a)
-            6'h12: io2[a] <= d & 8'h3F;
-            default: io2[a] <= d;
-        endcase
+        // TiEmu ports.c io2_put_byte: while flash protection is armed,
+        // writes to $700000-$70000F (RAM-execute map), $700012 and $70001F
+        // are ignored ("if(tihw.protect) return;").
+        if (protect && (a <= 6'h0F || a == 6'h12 || a == 6'h1F)) begin
+            // dropped
+        end else begin
+            case (a)
+                6'h12: io2[a] <= d & 8'h3F;
+                default: io2[a] <= d;
+            endcase
+        end
     end
     endtask
 
@@ -302,6 +318,10 @@ module io_ports (
 
             // TiEmu hw_io_init(): HW2+ defaults
             io2[8'h1D] <= 8'h02;      // LCD screen enable
+            // TiEmu hw_hwp_init(): HW2+ flash protection page limit. The
+            // OS reads this back; leaving it 0 makes the OS believe the
+            // protection hardware has failed.
+            io2[8'h13] <= 8'h18;
 
             cpu_stop_pulse <= 1'b0;
             ack_ai2_pulse  <= 1'b0;
@@ -335,7 +355,9 @@ module io_ports (
     // Read mux (combinational)
     // =========================================================================
     // Word access: {byte(addr), byte(addr+1)}.
-    // Byte access: the addressed byte is driven on both lanes.
+    // Even byte access (UDS only): byte(addr) driven on both lanes.
+    // Odd byte access (LDS only): the CPU samples the LOWER lane, which
+    // must carry byte(addr+1) — the register at the true odd address.
 
     wire [7:0] rd_hi = (bank == 2'd0) ? b1    :
                        (bank == 2'd1) ? b2    : b3;
@@ -344,7 +366,9 @@ module io_ports (
 
     wire word_access = !uds_n && !lds_n;
 
-    assign rdata = word_access ? {rd_hi, rd_lo} : {rd_hi, rd_hi};
+    assign rdata = word_access ? {rd_hi, rd_lo} :
+                   !uds_n      ? {rd_hi, rd_hi} :   // even byte
+                                 {rd_lo, rd_lo};    // odd byte
 
     // =========================================================================
     // Output signal assignments
