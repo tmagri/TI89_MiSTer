@@ -178,7 +178,24 @@ module mem_ctrl (
                         req_wdata <= 16'd0;
                         req_boot  <= 1'b1;
                         state     <= S_ACCESS;
-                    end else if (!cpu_as_n) begin
+                    end else if (!cpu_as_n &&
+                                 (!cpu_uds_n || !cpu_lds_n)) begin
+                        // A bus cycle is qualified by its data strobes, not
+                        // by AS alone. This matters for WRITE cycles: on the
+                        // 68000 bus AS asserts about one phase before UDS/LDS
+                        // (fx68k drives AS at bus phase S0 and the data
+                        // strobes at S2). Latching on AS alone would capture
+                        // writes while both strobes are still negated, the
+                        // byte-lane logic would see "no lanes active", and
+                        // every RAM/IO/FLASH write would be silently dropped.
+                        // Address and write data are already stable when the
+                        // strobes assert, so sampling here is safe.
+                        //
+                        // The only cycles that hold AS low with both strobes
+                        // negated are interrupt acknowledge cycles (answered
+                        // through VPA/autovector, no DTACK expected) and
+                        // address-error accesses (aborted internally by the
+                        // CPU), so ignoring those is the correct behavior.
                         req_addr  <= {cpu_addr, 1'b0};
                         req_rw    <= cpu_rw_n;
                         req_uds_n <= cpu_uds_n;

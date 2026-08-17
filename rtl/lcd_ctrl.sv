@@ -2,14 +2,19 @@
 // lcd_ctrl.sv — TI-89 LCD DMA Controller
 // TI-89 MiSTer Core
 //
-// The TI-89 LCD is 160×100 pixels, monochrome (1 bit per pixel).
+// The TI-89 LCD panel is 160×100 pixels, monochrome (1 bit per pixel).
 // LCD memory lives in the calculator's RAM. On HW2+ (Titanium) the base
 // byte address is computed by the I/O port logic:
 //     base = $4C00 + $1000 * (io2[$17] & 3)
 // and fed to this controller in lcd_base_addr (already a byte address).
 //
-// Each row of the display is (log_w / 8) bytes = 20 bytes = 10 words.
-// Total LCD memory = 20 bytes × 100 rows = 2000 bytes.
+// The LCD controller scans a 240×128 logical plane: each row occupies
+// 30 bytes (15 words), so the row stride in RAM is 30 bytes, NOT 20
+// (the OS writes $600012 = $31 -> logical width (64-$31)*16 = 240 px).
+// The panel shows the top-left 160×100 window of that plane: the first
+// 20 bytes (10 words) of each of the first 100 rows.
+// (Verified against TiEmu/n-89: plane size 3840 bytes,
+//  pixel(x,y) = plane[(y*240 + x)/8], visible x<160, y<100.)
 //
 // This controller DMA-reads one row at a time from RAM into a line
 // buffer during the previous line's horizontal blank (and line 0 during
@@ -128,8 +133,9 @@ module lcd_ctrl (
     // line N+1; during all vertical-blank lines we keep refreshing line 0.
     wire [6:0] fetch_row = (v_count < V_ACTIVE - 8'd1) ? (v_count[6:0] + 7'd1)
                                                        : 7'd0;
-    // Row byte offset = row * 20 = row*16 + row*4 (max 99*20 = 1980)
-    wire [17:0] row_offset = ({11'd0, fetch_row} << 4) + ({11'd0, fetch_row} << 2);
+    // Row byte offset = row * 30 = row*32 - row*2 (max 99*30 = 2970).
+    // Only the first 10 words (160 px) of each 15-word row are visible.
+    wire [17:0] row_offset = ({11'd0, fetch_row} << 5) - ({11'd0, fetch_row} << 1);
 
     wire dma_trigger = pix_tick && (h_count == H_ACTIVE);
 

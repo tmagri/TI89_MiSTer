@@ -45,7 +45,7 @@ module io_ports (
     output [15:0] lcd_addr,     // LCD base byte address (HW2+ decode)
     output  [7:0] lcd_log_w,    // LCD logical width register ($600012)
     output  [7:0] lcd_log_h,    // LCD logical height register ($600013)
-    output  [3:0] lcd_contrast, // LCD contrast ($60001C)
+    output  [3:0] lcd_contrast, // LCD contrast ($60001D)
     output        lcd_on,       // LCD enabled
     input         lcd_vsync,    // One-frame pulse (toggles $70001D bit 7)
 
@@ -360,7 +360,9 @@ module io_ports (
     assign lcd_addr  = 16'h4C00 + {io2[6'h17][1:0], 12'd0};
     assign lcd_log_w = io1[8'h12];
     assign lcd_log_h = io1[8'h13];
-    assign lcd_contrast = io1[8'h1C][3:0];
+    // Contrast is $60001D (TiEmu ports.c); $60001C is the row-sync (RS)
+    // register whose [5:2] field is used for lcd_on above.
+    assign lcd_contrast = io1[8'h1D][3:0];
 
     // LCD active: DMA enable ($600015.0), screen enable ($70001D.1) and
     // row-sync not switched off ($60001C [5:2] != 4'b1111)
