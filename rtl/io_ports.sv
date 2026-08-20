@@ -56,7 +56,16 @@ module io_ports (
 
     // Interrupt acknowledgement (one-cycle pulses)
     output        ack_ai2,      // Write to $60001B acknowledges AI2
-    output        ack_ai6       // Write to $60001A acknowledges AI6
+    output        ack_ai6,      // Write to $60001A acknowledges AI6
+
+    // Programmable timer reload strobe (one-cycle pulse, one cycle after
+    // the bus write so io1[$17] already carries the new value)
+    output        timer_load,   // Write to $600017 resets the timer value
+
+    // AI7 arm bit: $600001 bit 2 (io_bit_tst(0x01, 2) in mem.c). While
+    // set, any CPU write below $000120 raises level-7 autovector
+    // ("vector table write protection & stack overflow").
+    output        prot_arm
 );
 
     // =========================================================================
@@ -70,10 +79,13 @@ module io_ports (
     reg cpu_stop_pulse;
     reg ack_ai2_pulse;
     reg ack_ai6_pulse;
+    reg timer_load_pulse;
 
-    assign cpu_stop = cpu_stop_pulse;
-    assign ack_ai2  = ack_ai2_pulse;
-    assign ack_ai6  = ack_ai6_pulse;
+    assign cpu_stop   = cpu_stop_pulse;
+    assign ack_ai2    = ack_ai2_pulse;
+    assign ack_ai6    = ack_ai6_pulse;
+    assign timer_load = timer_load_pulse;
+    assign prot_arm   = io1[5'h01][2];
 
     // =========================================================================
     // Write addresses and byte lanes (68000 bus conventions)
@@ -107,6 +119,7 @@ module io_ports (
             5'h05: cpu_stop_pulse <= 1'b1;  // Stop OSC1 (CPU), wake per mask
             5'h0C: if (d[6] && d[5]) io1[5'h0D] <= 8'h40; // link reset
             5'h0F: io1[5'h0D][0] <= 1'b0;   // STX=0: tx register full
+            5'h17: timer_load_pulse <= 1'b1; // Writing $600017 resets the timer (ports.c)
             5'h1A: ack_ai6_pulse <= 1'b1;   // Acknowledge AI6 (ON key)
             5'h1B: ack_ai2_pulse <= 1'b1;   // Acknowledge AI2 (keyboard)
             default: ;
@@ -129,8 +142,12 @@ module io_ports (
             5'h17: b1 = timer_value;                  // live counter
             5'h1A: b1 = (io1[5'h1A] & 8'hFD) | ({7'd0, ~on_key} << 1);
             5'h1B: b1 = kbd_col_data;
+            5'h0E: b1 = 8'h14;                        // falls to default (0x14) in ref
             5'h1E, 5'h1F:
                    b1 = 8'h14;                        // unmapped
+            // n-89 parity: every other bank-1 register (0x01-0x05, 0x0C,
+            // 0x0F, 0x14-0x19, 0x1C, 0x1D) has an explicit case that returns
+            // the stored value, so the default here must NOT force 0x14.
             default: ;
         endcase
     end
@@ -150,6 +167,7 @@ module io_ports (
             5'h17: b1_lo = timer_value;
             5'h1A: b1_lo = (io1[5'h1A] & 8'hFD) | ({7'd0, ~on_key} << 1);
             5'h1B: b1_lo = kbd_col_data;
+            5'h0E: b1_lo = 8'h14;                     // ref default
             5'h1E, 5'h1F:
                    b1_lo = 8'h14;
             default: ;
@@ -164,6 +182,7 @@ module io_ports (
     wire [5:0] a2_lo = addr_lo[5:0];
 
     // $70001D bit 7 toggles every LCD frame (free-running status bit)
+    reg [19:0] fs_div;
     reg frame_bit;
 
     task io2_write(input [5:0] a, input [7:0] d);
@@ -193,10 +212,17 @@ module io_ports (
     end
 
     always @(posedge clk) begin
-        if (reset)
+        if (reset) begin
+            fs_div <= 20'd0;
             frame_bit <= 1'b0;
-        else if (lcd_vsync)
-            frame_bit <= ~frame_bit;
+        end else begin
+            if (fs_div == 20'd749951) begin
+                fs_div <= 20'd0;
+                frame_bit <= ~frame_bit;
+            end else begin
+                fs_div <= fs_div + 20'd1;
+            end
+        end
     end
 
     wire [7:0] a3 = addr;
@@ -323,13 +349,15 @@ module io_ports (
             // protection hardware has failed.
             io2[8'h13] <= 8'h18;
 
-            cpu_stop_pulse <= 1'b0;
-            ack_ai2_pulse  <= 1'b0;
-            ack_ai6_pulse  <= 1'b0;
+            cpu_stop_pulse   <= 1'b0;
+            ack_ai2_pulse    <= 1'b0;
+            ack_ai6_pulse    <= 1'b0;
+            timer_load_pulse <= 1'b0;
         end else begin
-            cpu_stop_pulse <= 1'b0;
-            ack_ai2_pulse  <= 1'b0;
-            ack_ai6_pulse  <= 1'b0;
+            cpu_stop_pulse   <= 1'b0;
+            ack_ai2_pulse    <= 1'b0;
+            ack_ai6_pulse    <= 1'b0;
+            timer_load_pulse <= 1'b0;
 
             if (wr) begin
                 case (bank)

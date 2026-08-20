@@ -50,7 +50,8 @@ module lcd_ctrl (
 
     // Video output interface (directly to scaler)
     output reg        pixel_out,  // 1 = pixel on, 0 = pixel off
-    output reg        pixel_valid,// Pixel data is valid
+    output reg        pixel_valid,// Pixel data valid: ONE-CYCLE strobe per
+                                  // active pixel (160 per row), low otherwise
     output reg        hsync,      // Horizontal sync (active high, 1 cycle)
     output reg        vsync,      // Vertical sync (active high, 1 cycle)
     output reg        hblank,     // Horizontal blanking
@@ -246,6 +247,11 @@ module lcd_ctrl (
                 pixel_x     <= h_count[7:0];
                 pixel_y     <= v_count[6:0];
             end
+        end else begin
+            // pixel_valid is a ONE-CYCLE strobe per active pixel: the
+            // scaler counts each pix_ce cycle as a new pixel, so the
+            // strobe must never stay high between pix_ticks.
+            pixel_valid <= 1'b0;
         end
     end
 

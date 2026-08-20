@@ -17,7 +17,11 @@
 //        increment stage — i.e. on the 255->0 wrap, and on every tick when
 //        the reload value is 0 (matches TiEmu hw_update exactly)
 //   AI6: ON key press (set by keyboard controller, acked by writing $60001A)
-//   AI7: protection violation (not implemented)
+//   AI7: protection violation — a CPU write below $000120 while $600001
+//        bit 2 is armed ("vector table write protection & stack
+//        overflow", mem.c put_long/put_word/put_byte). Level 7 is the
+//        68000 NMI: it is NOT gated by the master disable bit and is
+//        cleared only by its interrupt-acknowledge cycle.
 //
 // Timing: OSC2 = 2^19 Hz. The base tick is OSC2/2^5 = 16384 Hz, derived
 // from the 64 MHz master clock (64e6 / 3906 = 16385 Hz, 0.006% fast).
@@ -39,11 +43,15 @@ module timer_int (
     // Timer control from I/O ports
     input   [7:0] timer_ctrl,    // $600015
     input   [7:0] timer_init,    // $600017 written value (reload value)
+    input         timer_load,    // One-cycle strobe: $600017 was just written
     output reg [7:0] timer_value, // Current timer value (read by CPU)
 
     // Keyboard interrupt sources
     input         kbd_int,       // Key state change detected (sets AI2)
     input         on_key_press,  // ON key pressed edge (sets AI6)
+
+    // AI7 violation strobe from mem_ctrl (one cycle per offending write)
+    input         ai7_set,
 
     // Interrupt acknowledgements from I/O port writes
     input         ack_ai2,       // Write to $60001B
@@ -117,9 +125,9 @@ module timer_int (
     // =========================================================================
 
     reg ai1_pending, ai2_pending, ai3_pending;
-    reg ai5_pending, ai6_pending;
+    reg ai5_pending, ai6_pending, ai7_pending;
 
-    assign int_pend = {1'b0, ai6_pending, ai5_pending, 1'b0,
+    assign int_pend = {ai7_pending, ai6_pending, ai5_pending, 1'b0,
                        ai3_pending, ai2_pending, ai1_pending, 1'b0};
 
     always @(posedge clk) begin
@@ -131,6 +139,7 @@ module timer_int (
             ai3_pending  <= 1'b0;
             ai5_pending  <= 1'b0;
             ai6_pending  <= 1'b0;
+            ai7_pending  <= 1'b0;
         end else begin
 
             // -----------------------------------------------------------------
@@ -140,6 +149,10 @@ module timer_int (
             // ON key (AI6) and keyboard (AI2) — not gated by master disable
             if (on_key_press) ai6_pending <= 1'b1;
             if (kbd_int)      ai2_pending <= 1'b1;
+            // AI7 (NMI) — raised by mem_ctrl on a protected low-RAM write.
+            // Like the real 68000 level-7 input it ignores the master
+            // disable and the SR interrupt mask.
+            if (ai7_set)      ai7_pending <= 1'b1;
 
             if (base_tick) begin
                 timer <= timer + 19'd1;
@@ -157,13 +170,15 @@ module timer_int (
                 end
             end
 
-            // Programmable timer (AI5) — counts UP on prescaled ticks.
-            // Reference (TiEmu hw_update): the increment stage runs first
-            // (0 -> reload from $600017, else ++, wrapping FF -> 00), then
-            // AI5 is raised whenever the value is 0 at that moment. That
-            // means AI5 fires on the FF->00 wrap AND every tick when the
-            // reload value itself is 0.
-            if (prescale_tick && master_en && osc2_en && timer_en) begin
+            // n-89 parity (ports.c io_put_byte, case 0x17): a write to
+            // $600017 resets the live timer value to the written byte
+            // immediately ("tihw.timer_value = arg"). The strobe arrives
+            // one cycle after the bus write, when io1[$17] (timer_init)
+            // already holds the new value. This must win over a prescale
+            // tick landing on the same cycle.
+            if (timer_load) begin
+                timer_value <= timer_init;
+            end else if (prescale_tick && master_en && osc2_en && timer_en) begin
                 if (timer_value == 8'd0) begin
                     timer_value <= timer_init;          // reload
                     if (timer_init == 8'd0)
@@ -193,6 +208,7 @@ module timer_int (
                     3'd3: ai3_pending <= 1'b0;
                     3'd5: ai5_pending <= 1'b0;
                     3'd6: ai6_pending <= 1'b0;
+                    3'd7: ai7_pending <= 1'b0;
                     default: ;
                 endcase
             end
@@ -205,7 +221,8 @@ module timer_int (
     // 68000 priority: 7 > 6 > 5 > 4 > 3 > 2 > 1 > 0 (none)
 
     always @(*) begin
-        if      (ai6_pending) ipl = 3'd6;
+        if      (ai7_pending) ipl = 3'd7;   // NMI: highest priority
+        else if (ai6_pending) ipl = 3'd6;
         else if (ai5_pending) ipl = 3'd5;
         // AI4 (link port) not implemented
         else if (ai3_pending) ipl = 3'd3;

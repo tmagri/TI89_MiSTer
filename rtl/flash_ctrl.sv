@@ -139,7 +139,7 @@ module flash_ctrl (
                             flash_ready <= 1'b1;
                             req_valid   <= 1'b0;
                         end else if (ret_or) begin
-                            flash_rdata <= 16'hFFFF;
+                            flash_rdata <= 16'h00B0;
                             flash_ready <= 1'b1;
                             req_valid   <= 1'b0;
                         end else begin

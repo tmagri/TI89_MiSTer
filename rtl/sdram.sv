@@ -47,7 +47,11 @@ module sdram (
     output        SDRAM_CKE,
     output [12:0] SDRAM_A,
     output  [1:0] SDRAM_BA,
-    inout  [15:0] SDRAM_DQ,
+    // DQ split into in/out/OE so a sim chip model and the top level can
+    // share the bidirectional line with a single driver each.
+    input  [15:0] SDRAM_DQ_IN,
+    output [15:0] SDRAM_DQ_OUT,
+    output        SDRAM_DQ_OE,
     output        SDRAM_DQML,
     output        SDRAM_DQMH,
     output        SDRAM_nCS,
@@ -403,7 +407,7 @@ module sdram (
                 S_RCAP: begin
                     s_dqml  <= 1'b0;
                     s_dqmh  <= 1'b0;
-                    a_rdata <= SDRAM_DQ;
+                    a_rdata <= SDRAM_DQ_IN;
                     cmd     <= CMD_PRE;
                     s_ba    <= cur_bank;
                     s_addr  <= 13'd0;
@@ -453,7 +457,8 @@ module sdram (
     assign SDRAM_CKE  = 1'b1;
     assign SDRAM_A    = s_addr;
     assign SDRAM_BA   = s_ba;
-    assign SDRAM_DQ   = dq_oe ? s_dout : 16'hZZZZ;
+    assign SDRAM_DQ_OUT = s_dout;
+    assign SDRAM_DQ_OE  = dq_oe;
     assign SDRAM_DQML = s_dqml;
     assign SDRAM_DQMH = s_dqmh;
     assign SDRAM_nCS  = cmd[3];

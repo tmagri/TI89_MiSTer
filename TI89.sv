@@ -387,6 +387,12 @@ module emu
 	wire        sd_ready;
 	wire        sdram_init_done;
 
+	// Bidirectional DQ rebuilt from the controller's split in/out/OE ports.
+	wire [15:0] sdram_dq_out;
+	wire        sdram_dq_oe;
+	wire [15:0] sdram_dq_in = SDRAM_DQ;
+	assign SDRAM_DQ = sdram_dq_oe ? sdram_dq_out : 16'hZZZZ;
+
 	sdram sdram
 	(
 		.clk(clk_sys),
@@ -396,7 +402,9 @@ module emu
 		.SDRAM_CKE(SDRAM_CKE),
 		.SDRAM_A(SDRAM_A),
 		.SDRAM_BA(SDRAM_BA),
-		.SDRAM_DQ(SDRAM_DQ),
+		.SDRAM_DQ_IN(sdram_dq_in),
+		.SDRAM_DQ_OUT(sdram_dq_out),
+		.SDRAM_DQ_OE(sdram_dq_oe),
 		.SDRAM_DQML(SDRAM_DQML),
 		.SDRAM_DQMH(SDRAM_DQMH),
 		.SDRAM_nCS(SDRAM_nCS),
@@ -486,7 +494,9 @@ module emu
 	wire        io_rd, io_wr;
 	wire  [1:0] io_bank;
 	wire        io_uds_n, io_lds_n;
-	wire        protect; // flash protection state (mem_ctrl hwprot)
+	wire        protect;  // flash protection state (mem_ctrl hwprot)
+	wire        prot_arm; // $600001 bit 2: AI7 low-RAM write protection armed
+	wire        ai7_hit;  // CPU wrote below $000120 while prot_arm was set
 
 	mem_ctrl mem_ctrl
 	(
@@ -546,7 +556,9 @@ module emu
 		.io_bank(io_bank),
 		.io_uds_n(io_uds_n),
 		.io_lds_n(io_lds_n),
-		.protect(protect)
+		.protect(protect),
+		.prot_arm(prot_arm),
+		.ai7_hit(ai7_hit)
 	);
 
 	///////////////////////////////////////////////////////////////////////////
@@ -571,6 +583,7 @@ module emu
 	wire   [7:0] timer_ctrl;
 	wire   [7:0] timer_init;
 	wire   [7:0] timer_value;
+	wire         timer_load;
 	wire  [15:0] lcd_base_addr;
 	wire   [7:0] lcd_log_w;
 	wire   [7:0] lcd_log_h;
@@ -616,7 +629,9 @@ module emu
 		.stop_mask(stop_mask),
 
 		.ack_ai2(ack_ai2),
-		.ack_ai6(ack_ai6)
+		.ack_ai6(ack_ai6),
+		.timer_load(timer_load),
+		.prot_arm(prot_arm)
 	);
 
 	///////////////////////////////////////////////////////////////////////////
@@ -636,10 +651,12 @@ module emu
 
 		.timer_ctrl(timer_ctrl),
 		.timer_init(timer_init),
+		.timer_load(timer_load),
 		.timer_value(timer_value),
 
 		.kbd_int(kbd_int),
 		.on_key_press(on_key_press),
+		.ai7_set(ai7_hit),
 
 		.ack_ai2(ack_ai2),
 		.ack_ai6(ack_ai6),
@@ -679,8 +696,27 @@ module emu
 	// initial SSP/PC. timer_int/keyboard/io_ports are held in cpu_reset
 	// until boot completes, so ipl is guaranteed 0 during that window.
 	wire intack_raw = (cpu_fc == 3'b111) && !cpu_as_n;
-	wire intack     = intack_raw && (ipl != 3'd0);
-	wire vpa_n      = ~intack;
+
+	// Latch the IACK for the whole bus cycle. Once the CPU starts an
+	// interrupt-acknowledge sequence, VPA must stay asserted until AS is
+	// released. The pending-flag clear in timer_int happens on the first
+	// cycle of the IACK; if that was the only pending interrupt, ipl falls
+	// to 0 mid-sequence and a purely combinational gate deasserts VPA.
+	// fx68k then abandons the autovector and samples a garbage vector off
+	// the data bus (observed: AI1 ack picked up vector 20, [$50]=0, the
+	// CPU executed the vector table as code and cascaded into address
+	// errors forever). Latching at cycle start keeps the reset-vector
+	// guard too: those cycles begin with ipl == 0, so they never latch.
+	reg intack_latch;
+	always @(posedge clk_sys) begin
+		if (cpu_as_n)
+			intack_latch <= 1'b0;
+		else if (intack_raw && (ipl != 3'd0))
+			intack_latch <= 1'b1;
+	end
+
+	wire intack = intack_raw && (ipl != 3'd0 || intack_latch);
+	wire vpa_n  = ~intack;
 
 	// One-cycle IACK strobe for timer_int's pending-flag clearing: a
 	// multi-cycle IACK would otherwise clear additional priority levels
@@ -693,7 +729,9 @@ module emu
 	// (v12.js raise_interrupt): AI6 (ON key) always wakes; AI1..AI5 wake
 	// only if their bit is set in the mask written to $600005.
 	reg  stopped;
-	wire wake = int_pend[6] | (|(int_pend[5:1] & stop_mask));
+	// AI6 (ON key) always wakes; AI7 (NMI) always breaks through STOP;
+	// AI1..AI5 wake only if their bit is set in the $600005 mask.
+	wire wake = int_pend[7] | int_pend[6] | (|(int_pend[5:1] & stop_mask));
 
 	always @(posedge clk_sys) begin
 		if (core_reset || !boot_done)

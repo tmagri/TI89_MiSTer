@@ -119,7 +119,16 @@ module mem_ctrl (
 
     // Flash protection state (TiEmu hwprot.c). io_ports gates writes to
     // io2[$00-$0F], io2[$12] and io2[$1F] with this.
-    output reg    protect
+    output reg    protect,
+
+    // AI7 "vector table write protection & stack overflow" (mem.c
+    // put_long/put_word/put_byte): prot_arm = $600001 bit 2 from
+    // io_ports; ai7_hit pulses for one cycle when a CPU RAM write lands
+    // below $000120 while armed. The write still completes — the level-7
+    // interrupt is taken after the current instruction, exactly like the
+    // reference.
+    input         prot_arm,
+    output reg    ai7_hit
 );
 
     // =========================================================================
@@ -506,6 +515,7 @@ module mem_ctrl (
             io_addr      <= 8'd0;
             io_bank      <= 2'd0;
             io_wdata     <= 16'd0;
+            ai7_hit      <= 1'b0;
             boot_ack     <= 1'b0;
             cpu_ram_want <= 1'b0;
             req_addr     <= 24'd0;
@@ -520,6 +530,7 @@ module mem_ctrl (
             flash_wr <= 1'b0;
             io_rd    <= 1'b0;
             io_wr    <= 1'b0;
+            ai7_hit  <= 1'b0;
             boot_ack <= 1'b0;
             if (ram_load_cpu)
                 cpu_ram_want <= 1'b0;
@@ -570,6 +581,16 @@ module mem_ctrl (
                         // for the arbiter's completion pulse.
                         cpu_ram_want <= 1'b1;
                         state        <= S_WAITRAM;
+
+                        // AI7 (mem.c put_long/put_word/put_byte): a CPU
+                        // write below $000120 while $600001 bit 2 is armed
+                        // raises level-7 autovector. req_addr is the even-
+                        // aligned byte address ({cpu_addr, 1'b0}), so an
+                        // odd byte write to $11F arrives as $11E and still
+                        // qualifies. The write itself completes; the NMI
+                        // hits after the current instruction.
+                        if (!req_rw && prot_arm && (req_addr < 24'h000120))
+                            ai7_hit <= 1'b1;
 
                     end else if (sel_flash) begin
                         // FLASH via flash_ctrl (WSM + SDRAM), subject to
