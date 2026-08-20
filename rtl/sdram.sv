@@ -393,21 +393,33 @@ module sdram (
                     end
                 end
 
-                // Read: CAS latency wait
+                // Read: CAS latency wait.
+                //
+                // Capture happens HERE, in the timer==0 branch, NOT in
+                // S_RCAP: with CL=2 and BL=1 the chip drives DQ for
+                // exactly one SDRAM clock window (it releases the bus
+                // immediately after), and that window ends one half
+                // master cycle before S_RCAP would run. Capturing in
+                // S_RCAP sampled the lines after the chip had let go —
+                // invisible in simulation (the model never tri-states
+                // DQ) but intermittent bit errors on real silicon
+                // (garbled glyphs, hung boot). The rising edge here is
+                // half a cycle after the data edge: inside the window.
                 S_RCAS: begin
                     s_dqml <= 1'b0;
                     s_dqmh <= 1'b0;
                     if (timer != 4'd0)
                         timer <= timer - 4'd1;
-                    else
-                        state <= S_RCAP;
+                    else begin
+                        a_rdata <= SDRAM_DQ_IN;
+                        state   <= S_RCAP;
+                    end
                 end
 
-                // Read: capture data, close the row
+                // Read: close the row
                 S_RCAP: begin
                     s_dqml  <= 1'b0;
                     s_dqmh  <= 1'b0;
-                    a_rdata <= SDRAM_DQ_IN;
                     cmd     <= CMD_PRE;
                     s_ba    <= cur_bank;
                     s_addr  <= 13'd0;
