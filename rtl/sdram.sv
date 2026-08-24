@@ -214,10 +214,16 @@ module sdram (
     reg   [8:0] cur_col;
     reg  [15:0] cur_data;
 
-    // =========================================================================
-    // Main FSM
-    // =========================================================================
+    // Capture read data on the falling clock edge (at the center of
+    // the SDRAM valid data eye, ~9.2 ns after data is driven by chip).
+    // An unconditional single register clocked on negedge clk allows Quartus
+    // to pack this directly into the IOE FAST_INPUT_REGISTER on SDRAM_DQ.
+    reg [15:0] sdram_dq_captured;
+    always @(negedge clk) begin
+        sdram_dq_captured <= SDRAM_DQ_IN;
+    end
 
+    // Main FSM
     always @(posedge clk) begin
         if (reset) begin
             state      <= S_RESET;
@@ -394,32 +400,20 @@ module sdram (
                 end
 
                 // Read: CAS latency wait.
-                //
-                // Capture happens HERE, in the timer==0 branch, NOT in
-                // S_RCAP: with CL=2 and BL=1 the chip drives DQ for
-                // exactly one SDRAM clock window (it releases the bus
-                // immediately after), and that window ends one half
-                // master cycle before S_RCAP would run. Capturing in
-                // S_RCAP sampled the lines after the chip had let go —
-                // invisible in simulation (the model never tri-states
-                // DQ) but intermittent bit errors on real silicon
-                // (garbled glyphs, hung boot). The rising edge here is
-                // half a cycle after the data edge: inside the window.
                 S_RCAS: begin
                     s_dqml <= 1'b0;
                     s_dqmh <= 1'b0;
                     if (timer != 4'd0)
                         timer <= timer - 4'd1;
-                    else begin
-                        a_rdata <= SDRAM_DQ_IN;
-                        state   <= S_RCAP;
-                    end
+                    else
+                        state <= S_RCAP;
                 end
 
-                // Read: close the row
+                // Read: capture negedge data, close the row
                 S_RCAP: begin
                     s_dqml  <= 1'b0;
                     s_dqmh  <= 1'b0;
+                    a_rdata <= sdram_dq_captured;
                     cmd     <= CMD_PRE;
                     s_ba    <= cur_bank;
                     s_addr  <= 13'd0;
