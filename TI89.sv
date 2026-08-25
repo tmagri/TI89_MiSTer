@@ -6,7 +6,7 @@
 // sys/emu_ports.vh.
 //
 // Clocking:
-//   CLK_50M -> PLL -> 64 MHz master clock (clk_sys)
+//   CLK_50M -> PLL -> 60 MHz master clock (clk_sys)
 //   The whole core runs from clk_sys. The SDRAM controller derives
 //   SDRAM_CLK by inverting it (phase-shifted output for the SDRAM chip).
 //   CLK_VIDEO = clk_sys, video pixels are strobed by CE_PIXEL.
@@ -185,15 +185,18 @@ module emu
 	// Clocks and reset
 	///////////////////////////////////////////////////////////////////////////
 
-	wire clk_sys;      // 64 MHz master clock
+	wire clk_sys;      // 60 MHz master clock
+	wire clk_sdram;    // 60 MHz SDRAM clock (-3000 ps phase shifted)
 	wire pll_locked;
 
-	pll_0002 pll
+	// Wrapper (rtl/pll.v) so the PLL hierarchy matches the exclusive clock
+	// group pattern in sys/sys_top.sdc (*|pll|pll_inst|altera_pll_i|...).
+	pll pll
 	(
 		.refclk(CLK_50M),
 		.rst(RESET),
-		.outclk_0(clk_sys),        // 64 MHz
-		.outclk_1(),               // reserved
+		.outclk_0(clk_sys),        // 60 MHz
+		.outclk_1(clk_sdram),      // 60 MHz (-3000 ps)
 		.locked(pll_locked),
 		.reconfig_to_pll(64'd0),
 		.reconfig_from_pll()
@@ -396,6 +399,7 @@ module emu
 	sdram sdram
 	(
 		.clk(clk_sys),
+		.clk_sdram(clk_sdram),
 		.reset(reset),
 
 		.SDRAM_CLK(SDRAM_CLK),

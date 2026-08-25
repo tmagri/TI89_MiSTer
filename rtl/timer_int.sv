@@ -24,7 +24,7 @@
 //        cleared only by its interrupt-acknowledge cycle.
 //
 // Timing: OSC2 = 2^19 Hz. The base tick is OSC2/2^5 = 16384 Hz, derived
-// from the 64 MHz master clock (64e6 / 3906 = 16385 Hz, 0.006% fast).
+// from the 60 MHz master clock (60e6 / 3662 = 16384.5 Hz, 0.003% fast).
 // One base tick corresponds to 32 OSC2 counter units, so:
 //   AI1 fires when base counter [5:0] == 0   (every 64 ticks)
 //   AI3 fires when base counter [13:0] == 0  (every 16384 ticks)
@@ -69,10 +69,10 @@ module timer_int (
 );
 
     // =========================================================================
-    // Base tick generator: 64 MHz / 3906 = 16385 Hz (nominal 16384 Hz)
+    // Base tick generator: 60 MHz / 3662 = 16384.5 Hz (nominal 16384 Hz)
     // =========================================================================
 
-    localparam [15:0] BASE_DIVISOR = 16'd3906;
+    localparam [15:0] BASE_DIVISOR = 16'd3662;
 
     reg [15:0] base_counter;
     reg        base_tick;

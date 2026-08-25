@@ -24,10 +24,13 @@ module  pll_0002(
 );
 
 	// TI-89 MiSTer core clocks
-	//   outclk_0 = 64.000 MHz : clk_sys (CPU/I/O/video master)
-	//   outclk_1 = 64.000 MHz : reserved (spare video/system clock)
+	//   outclk_0 = 60.000 MHz : clk_sys (CPU/I/O/video master)
+	//   outclk_1 = 60.000 MHz : reserved (spare video/system clock)
 	//
-	// 50.0 MHz reference x (M=64 / N=5) = 640 MHz VCO, /10 = 64 MHz
+	// 50.0 MHz reference x (M=60 / N=5) = 600 MHz VCO, /10 = 60 MHz
+	// Derated from 64 MHz: the last Quartus STA showed the master domain at/
+	// over its Fmax; 60 MHz gives real single-cycle paths a comfortable
+	// margin (CPU still runs at clk/6 = exactly 10.0 MHz).
 
 	altera_pll #(
 		.fractional_vco_multiplier("false"),
@@ -36,11 +39,11 @@ module  pll_0002(
 		.pll_dsm_out_sel("1st_order"),
 		.operation_mode("direct"),
 		.number_of_clocks(2),
-		.output_clock_frequency0("64.000000 MHz"),
+		.output_clock_frequency0("60.000000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("64.000000 MHz"),
-		.phase_shift1("0 ps"),
+		.output_clock_frequency1("60.000000 MHz"),
+		.phase_shift1("13750 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("0 MHz"),
 		.phase_shift2("0 ps"),
@@ -92,8 +95,8 @@ module  pll_0002(
 		.duty_cycle17(50),
 		.pll_type("Cyclone V"),
 		.pll_subtype("Normal"),
-		.m_cnt_hi_div(32),
-		.m_cnt_lo_div(32),
+		.m_cnt_hi_div(30),
+		.m_cnt_lo_div(30),
 		.n_cnt_hi_div(3),
 		.n_cnt_lo_div(2),
 		.m_cnt_bypass_en("false"),
@@ -109,8 +112,8 @@ module  pll_0002(
 		.c_cnt_odd_div_duty_en0("false"),
 		.c_cnt_hi_div1(5),
 		.c_cnt_lo_div1(5),
-		.c_cnt_prst1(1),
-		.c_cnt_ph_mux_prst1(0),
+		.c_cnt_prst1(9),
+		.c_cnt_ph_mux_prst1(2),
 		.c_cnt_in_src1("ph_mux_clk"),
 		.c_cnt_bypass_en1("false"),
 		.c_cnt_odd_div_duty_en1("false"),
@@ -229,7 +232,7 @@ module  pll_0002(
 		.pll_vco_div(1),
 		.pll_cp_current(30),
 		.pll_bwctrl(4000),
-		.pll_output_clk_frequency("640.000000 MHz"),
+		.pll_output_clk_frequency("600.000000 MHz"),
 		.mimic_fbclk_type("none"),
 		.pll_fbclk_mux_1("glb"),
 		.pll_fbclk_mux_2("m_cnt"),

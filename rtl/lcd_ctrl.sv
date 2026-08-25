@@ -67,7 +67,7 @@ module lcd_ctrl (
     //              100 lines + blanking ≈ 110 lines per frame
     //              200 * 110 = 22000 pixel clocks per frame
     //              22000 * 60 Hz = 1.32 MHz pixel clock
-    //              64 MHz master / 48 ≈ 1.333 MHz  ✓
+    //              60 MHz master / 48 = 1.25 MHz  ✓
 
     localparam [8:0] H_ACTIVE  = 9'd160;
     localparam [8:0] H_TOTAL   = 9'd200;

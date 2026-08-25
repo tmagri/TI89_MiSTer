@@ -43,7 +43,7 @@
 //
 
 module video_scaler (
-    input             clk,        // Master clock (64 MHz)
+    input             clk,        // Master clock (60 MHz)
     input             reset,
 
     // From lcd_ctrl

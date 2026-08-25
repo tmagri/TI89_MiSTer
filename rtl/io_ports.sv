@@ -237,7 +237,7 @@ module io_ports (
 
     reg [31:0] rtc_seconds;
     reg  [3:0] rtc_sixteenths;
-    reg [21:0] rtc_div;     // 64 MHz / 4,000,000 = 16 Hz sixteenth tick
+    reg [21:0] rtc_div;     // 60 MHz / 3,750,000 = 16 Hz sixteenth tick
 
     wire rtc_enabled = io3[8'h5F][0];
 
@@ -270,7 +270,7 @@ module io_ports (
             rtc_sixteenths <= io3[8'h44][3:0];
             rtc_div        <= 22'd0;
         end else if (rtc_enabled) begin
-            if (rtc_div == 22'd3999999) begin // 64 MHz / 16 Hz
+            if (rtc_div == 22'd3749999) begin // 60 MHz / 16 Hz
                 rtc_div <= 22'd0;
                 if (rtc_sixteenths == 4'd15) begin
                     rtc_sixteenths <= 4'd0;

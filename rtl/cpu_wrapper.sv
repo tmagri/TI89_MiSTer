@@ -4,7 +4,7 @@
 //
 
 module cpu_wrapper (
-    input         clk,          // Master clock (64 MHz)
+    input         clk,          // Master clock (60 MHz)
     input         reset,        // Active-high synchronous reset
     input         cpu_en,       // CPU enable (deasserted during ROM load)
     input         halt,         // Freeze the CPU in place (no reset); used
@@ -44,8 +44,8 @@ module cpu_wrapper (
     // clock rate, alternating to create the effective 68000 clock.
     //
     // For TI-89 Titanium (HW3): effective CPU clock ~12 MHz
-    // With 64 MHz master: divide by ~5.33, we use divide-by-6 (10.67 MHz)
-    // which is close enough. Each half-period is 3 master clocks.
+    // With 60 MHz master: divide-by-6 = exactly 10.0 MHz, close enough.
+    // Each half-period is 3 master clocks.
     //
     // Phase timing: enPhi1 fires 1 cycle before the rising edge,
     //               enPhi2 fires 1 cycle before the falling edge.

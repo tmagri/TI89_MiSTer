@@ -3,7 +3,7 @@
 // TI-89 MiSTer Core
 //
 // Backs the calculator's memories with the DE10-Nano's 32MB SDRAM
-// (IS42S16160G, 16-bit, 4 banks x 8192 rows x 512 columns). Clock: 64 MHz.
+// (IS42S16160G, 16-bit, 4 banks x 8192 rows x 512 columns). Clock: 60 MHz.
 //
 // Memory layout (set by mem_ctrl, which owns port A):
 //   byte $000000-$3FFFFF : OS image / flash window (4 MB)
@@ -39,7 +39,8 @@
 //
 
 module sdram (
-    input         clk,         // 64 MHz master clock
+    input         clk,         // 60 MHz master clock
+    input         clk_sdram,   // 60 MHz phase-shifted SDRAM clock (-3000 ps)
     input         reset,
 
     // SDRAM physical interface
@@ -79,7 +80,7 @@ module sdram (
 );
 
     // =========================================================================
-    // Timing (64 MHz, one cycle = 15.6 ns; IS42S16320D-7TL)
+    // Timing (60 MHz, one cycle = 16.7 ns; IS42S16320D-7TL)
     // =========================================================================
 
     localparam [16:0] PWRUP_WAIT = 17'd20000; // ~310 us power stabilization
@@ -459,7 +460,7 @@ module sdram (
     // SDRAM pin drivers
     // =========================================================================
 
-    assign SDRAM_CLK  = ~clk;
+    assign SDRAM_CLK  = clk_sdram;
     assign SDRAM_CKE  = 1'b1;
     assign SDRAM_A    = s_addr;
     assign SDRAM_BA   = s_ba;
