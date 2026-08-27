@@ -3,10 +3,12 @@
 // TI-89 MiSTer Core
 //
 // lcd_ctrl generates a 160x100 active LCD raster where one LCD pixel
-// lasts 48 master clock cycles (pixel strobe pix_ce = clk/48, asserted
-// for active pixels only; blanking intervals arrive as gaps between
-// strobes). One LCD row therefore lasts 200*48 = 9600 master clocks and
-// one LCD frame 110 rows = 1,056,000 clocks (~60.6 Hz).
+// lasts 48 master clock cycles. pix_ce is a ONE-CYCLE strobe on the first
+// clock of every active pixel (it must never stay high between pixels —
+// the capture logic counts each pix_ce cycle as a new pixel); blanking
+// intervals arrive as gaps between strobes. One LCD row therefore lasts
+// 200*48 = 9600 master clocks and one LCD frame 110 rows = 1,056,000
+// clocks (~60.6 Hz).
 //
 // This scaler re-emits every LCD pixel as SCALE x SCALE output pixels,
 // phase-locked to the LCD stream and at the SAME ~60.6 Hz frame rate in
@@ -34,6 +36,11 @@
 // the output emits row N-1 from the other bank. The output raster is
 // phase-locked to the LCD stream once at start; both periods are exact
 // integer clock counts, so the lock never drifts.
+//
+// If scale_sel changes while running (OSD scale option), the output raster
+// period changes and the phase lock is invalid. The scaler then halts the
+// output (blank) and re-locks at the next LCD frame start, so a rescaled
+// picture re-acquires lock within one frame instead of tearing forever.
 //
 // VGA-style output: positive-sync HS/VS, DE = active drawing area.
 // The MiSTer framework (ascal) scales this raster to the selected HDMI
@@ -119,6 +126,20 @@ module video_scaler (
     wire [9:0] hs_end      = HS_END   * scale;
     wire [9:0] vs_start    = VS_START * scale;
     wire [9:0] vs_end      = VS_END   * scale;
+    
+    // Scale-change detection: the output raster periods derive from
+    // scale_sel, so any change breaks the phase lock to the LCD stream;
+    // the lock is then re-acquired at the next LCD frame start (see the
+    // capture block below).
+    reg  [1:0] scale_d;
+    wire       scale_chg = (scale_d != scale_sel);
+
+    always @(posedge clk) begin
+        if (reset)
+            scale_d <= 2'd0;
+        else
+            scale_d <= scale_sel;
+    end
 
     // =========================================================================
     // LCD palette (background / foreground)
@@ -177,6 +198,7 @@ module video_scaler (
     // Output raster state
     // =========================================================================
     reg        started;    // output raster is phase-locked to the LCD stream
+    reg        relock;     // scale changed: re-acquire lock at next frame start
     reg [9:0]  oh;         // output horizontal position (0..h_total_m1)
     reg [9:0]  ov;         // output vertical position   (0..v_total_m1)
     reg [5:0]  out_cnt;    // output pixel divider
@@ -192,6 +214,7 @@ module video_scaler (
     always @(posedge clk) begin
         if (reset) begin
             started <= 1'b0;
+            relock  <= 1'b0;
             lcd_row <= 7'd0;
             lcd_px  <= 8'd0;
             idle_cnt<= 17'd0;
@@ -215,8 +238,29 @@ module video_scaler (
                 lcd_px   <= nxt_px;
                 // Store MSB-first, matching lcd_ctrl's pixel ordering
                 lbuf[nxt_row[0]][nxt_px[7:4]][15 - nxt_px[3:0]] <= pixel;
-                if (!started)
+                if (relock) begin
+                    // Re-lock at the first strobe of a new LCD frame — the
+                    // only phase where the fixed lock formula (group 109 at
+                    // row 0, pixel 0) is correct. While the re-lock is
+                    // pending the raster block's (lcd_ce && !started) branch
+                    // holds oh=0 / ov=lock_ov on every strobe, so the
+                    // re-acquisition lands phase-locked with no tearing.
+                    if (frame_gap) begin
+                        relock  <= 1'b0;
+                        started <= 1'b1;
+                    end
+                end else if (!started)
                     started <= 1'b1;
+            end
+
+            // AFTER the lcd_ce block: a scale change in the same cycle as a
+            // strobe must still halt the output (last write to `started`
+            // wins), arming the re-lock above for the next frame start.
+            if (scale_chg) begin
+                // The raster periods no longer match the LCD stream phase:
+                // halt the output until the lock can be re-acquired.
+                started <= 1'b0;
+                relock  <= 1'b1;
             end
         end
     end
@@ -259,6 +303,15 @@ module video_scaler (
     // Loaded once at lock (first LCD strobe = row 0 pixel 0 -> output sits
     // at the start of group 109); afterwards the counters free-run with
     // exact-integer periods that match the LCD stream, so the lock holds.
+    //
+    // oh_next/ov_next are shared with the h_wrap/v_wrap conditions used by
+    // the source-index tracking below, which advances its own registers on
+    // the same tick using the same "about to wrap" comparisons on the
+    // CURRENT oh/ov (see the emission block for why that keeps zero net
+    // delay without re-deriving oh_next/ov_next as data there).
+    wire [9:0] oh_next = (oh >= h_total_m1) ? 10'd0 : oh + 10'd1;
+    wire [9:0] ov_next = (oh >= h_total_m1) ? ((ov >= v_total_m1) ? 10'd0 : ov + 10'd1) : ov;
+
     always @(posedge clk) begin
         if (reset) begin
             oh <= 10'd0;
@@ -267,52 +320,115 @@ module video_scaler (
             oh <= 10'd0;
             ov <= lock_ov;
         end else if (out_tick && started) begin
-            if (oh >= h_total_m1) begin
-                oh <= 10'd0;
-                if (ov >= v_total_m1)
-                    ov <= 10'd0;
-                else
-                    ov <= ov + 10'd1;
-            end else
-                oh <= oh + 10'd1;
+            oh <= oh_next;
+            ov <= ov_next;
         end
     end
 
     // =========================================================================
-    // Output pixel emission
+    // Output pixel emission — pipelined, division-free source-index tracking
     // =========================================================================
-    // Output row ov shows LCD row ov/scale, captured one LCD row earlier
-    // into bank (ov/scale)[0].
-    reg [9:0] px_idx;    // LCD pixel x being displayed
-    reg [9:0] grp;       // output group (LCD row shown) = ov / scale
-    always @(*) begin
-        case (scale_sel)
-            2'd0:    begin px_idx = {2'd0, oh[9:2]}; grp = {2'd0, ov[9:2]}; end
-            2'd1:    begin px_idx = oh / 10'd3;      grp = ov / 10'd3;      end
-            2'd2:    begin px_idx = {1'd0, oh[9:1]}; grp = {1'd0, ov[9:1]}; end
-            default: begin px_idx = oh;              grp = ov;              end
-        endcase
+    // px_idx/grp must hold floor(oh/scale) / floor(ov/scale) (the source LCD
+    // pixel column / row-group currently being displayed), registered from
+    // the NEXT raster position for the same zero-net-delay reason as the
+    // oh/ov advance above (a naive register from the CURRENT counters would
+    // slip the data one pixel behind DE and corrupt every row).
+    //
+    // Recomputing floor(x/scale) from scratch every tick (needed only for
+    // the non-power-of-2 3x mode; 4x/2x/1x are plain shifts) put a 10-bit
+    // constant-divide — synthesized as a DSP multiply-by-reciprocal plus
+    // shift — combinationally in front of these registers every tick.
+    // Quartus's Timing Closure Recommendations flagged exactly that: "DSP
+    // register packing" (the multiplier is used purely combinationally,
+    // with no pipeline register of its own) and "long combinational path",
+    // both on the status[4] (scale_sel[0]) -> grp[0] path, for all 20
+    // px_idx/grp register bits.
+    //
+    // Fix: track floor(oh/scale) incrementally instead of recomputing it,
+    // using the same "accumulate one step at a time, avoid the divider"
+    // idiom already used above for the 3x output-pixel timebase
+    // (div_acc/out_cnt). oh/ov only ever move by exactly one step per tick,
+    // so floor(oh/scale) only needs a small repeat counter: h_rep/v_rep
+    // count 0..scale-1 sub-steps per source pixel/row, and px_idx/grp
+    // advance by one only when that counter wraps. This is exact (no
+    // rounding, no drift) and the combinational depth in front of the
+    // registers is now a 2-bit compare against `scale`, not a 10-bit
+    // divide — eliminating the DSP block from this path entirely.
+    //
+    // h_rep/px_idx track oh 1:1 (they step every tick). v_rep/grp track ov,
+    // which itself only steps when oh wraps, so they are gated on the same
+    // condition as the ov advance above.
+    reg [1:0] h_rep, v_rep;
+    reg [9:0] px_idx;
+    reg [9:0] grp;
+
+    // scale is 1..4, so scale-1 (0..3) fits in 2 bits; for scale==4 (3'b100)
+    // the low bits are 2'b00 and subtracting 1 wraps to 2'b11 = 3, which is
+    // still the correct scale-1 -- the mod-4 wraparound coincides exactly
+    // with the one case (scale==4) that relies on it.
+    wire [1:0] scale_m1   = scale[1:0] - 2'd1;
+    wire       h_rep_max  = (h_rep >= scale_m1);
+    wire       v_rep_max  = (v_rep >= scale_m1);
+    wire       h_wrap     = (oh >= h_total_m1);  // last column of the row
+    wire       v_wrap     = (ov >= v_total_m1);  // last row of the frame
+
+    always @(posedge clk) begin
+        if (reset) begin
+            h_rep  <= 2'd0;
+            v_rep  <= 2'd0;
+            px_idx <= 10'd0;
+            grp    <= 10'd0;
+        end else if (lcd_ce && !started) begin
+            // Mirrors the oh<=0 / ov<=lock_ov jump above: lock_ov is always
+            // an exact multiple of scale (== scale*(V_TOTAL-1)), so the
+            // matching source indices are always px_idx=0 / grp=V_TOTAL-1
+            // with both repeat counters at 0, regardless of scale.
+            h_rep  <= 2'd0;
+            v_rep  <= 2'd0;
+            px_idx <= 10'd0;
+            grp    <= {2'd0, V_TOTAL - 8'd1};
+        end else if (out_tick && started) begin
+            // Horizontal: steps every tick, in lock-step with oh.
+            if (h_wrap) begin
+                h_rep  <= 2'd0;
+                px_idx <= 10'd0;
+            end else if (h_rep_max) begin
+                h_rep  <= 2'd0;
+                px_idx <= px_idx + 10'd1;
+            end else begin
+                h_rep <= h_rep + 2'd1;
+            end
+
+            // Vertical: steps only when the horizontal raster wraps — the
+            // same condition under which ov itself advances above.
+            if (h_wrap) begin
+                if (v_wrap) begin
+                    v_rep <= 2'd0;
+                    grp   <= 10'd0;
+                end else if (v_rep_max) begin
+                    v_rep <= 2'd0;
+                    grp   <= grp + 10'd1;
+                end else begin
+                    v_rep <= v_rep + 2'd1;
+                end
+            end
+        end
     end
 
+    // RAM read using the registered indices.
     wire        rsel  = grp[0];
     wire [15:0] rword = lbuf[rsel][px_idx[7:4]];
     wire        rpix  = rword[15 - px_idx[3:0]];
 
+    // Colour selection (combinational — same as the original design).
+    wire [23:0] pix_rgb = rpix ? fg_rgb : bg_rgb;
+
+    // Region flags (combinational from counters — short paths)
     wire de_area = (oh <= h_active_m1) && (ov <= v_active_m1);
     wire hs_area = (oh >= hs_start) && (oh < hs_end);
     wire vs_area = (ov >= vs_start) && (ov < vs_end);
 
-    wire [23:0] pix_rgb = rpix ? fg_rgb : bg_rgb;
-
-    // =========================================================================
     // Boot-status diagnostic fill
-    // =========================================================================
-    // Paint the whole active area with a saturated color per boot_status.
-    // This can never hide real LCD content: lcd_on (and therefore any real
-    // pixel stream) can only become active after boot_done, at which point
-    // boot_status is 4 and the normal palette raster is shown. Sync, DE and
-    // ce_pix timing are untouched, so ascal keeps locking onto the raster.
-
     reg [23:0] status_rgb;
 
     always @(*) begin
@@ -327,6 +443,7 @@ module video_scaler (
 
     wire [23:0] draw_rgb = (boot_status != 3'd4) ? status_rgb : pix_rgb;
 
+    // Output registers
     always @(posedge clk) begin
         if (reset) begin
             ce_pix <= 1'b0;

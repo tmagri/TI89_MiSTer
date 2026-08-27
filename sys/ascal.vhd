@@ -511,6 +511,7 @@ ARCHITECTURE rtl OF ascal IS
 	SIGNAL o_lex0,o_lex1,o_lex2,o_lex3       : std_logic;
 	SIGNAL o_wr : unsigned(3 DOWNTO 0);
 	SIGNAL o_hcpt,o_vcpt,o_vcpt_pre,o_vcpt_pre2,o_vcpt_pre3,o_vcpt2 : uint12;
+	SIGNAL o_h_lineend : std_logic;
 	SIGNAL o_ihsize,o_ihsizem,o_ivsize : uint12;
 	SIGNAL o_ihsize_temp, o_ihsize_temp2 : natural RANGE 0 TO 32767;
 
@@ -1031,6 +1032,8 @@ ARCHITECTURE rtl OF ascal IS
 	SIGNAL o_v_poly_phase, o_v_poly_phase2, o_h_poly_phase, o_poly_phase, o_poly_phase1 : poly_phase_interp_t;
 	SIGNAL o_v_poly_pix, o_h_poly_pix, o_h_lum_pix, o_v_lum_pix : type_pix;
 	SIGNAL o_poly_lum, o_poly_lum1 : unsigned(7 DOWNTO 0);
+	-- Registered luminance to break poly_lum combinational path (STA fix)
+	SIGNAL o_v_lum_reg, o_h_lum_reg : unsigned(7 DOWNTO 0);
 	SIGNAL o_poly_lerp_ta, o_poly_lerp_tb : signed(9 DOWNTO 0);
 	SIGNAL o_h_poly_t,o_h_poly_t2,o_v_poly_t   : type_poly_t;
 
@@ -1137,16 +1140,7 @@ ARCHITECTURE rtl OF ascal IS
 		-- Just OR them all together
 		--v := (p.r OR p.g OR p.b);
 
-		-- Maximum
-		IF p.r > p.g THEN
-			v := p.r;
-		ELSE
-			v := p.g;
-		END IF;
-
-		IF p.b > v THEN
-			v := p.b;
-		END IF;
+		v := ("00" & p.r(7 DOWNTO 2)) + ("000" & p.r(7 DOWNTO 3)) + ("0" & p.g(7 DOWNTO 1)) + ("000" & p.b(7 DOWNTO 3));
 
 		-- 100%
 		-- v := "1111111";
@@ -2395,10 +2389,10 @@ BEGIN
 			END IF;
 
 			IF o_v_poly_use_adaptive='1' THEN
-				o_poly_lum<=poly_lum(o_v_lum_pix);
+				o_poly_lum <= poly_lum(o_v_lum_pix);
 				o_a_poly_addr<=o_v_poly_addr;
 			ELSIF o_h_poly_use_adaptive='1' THEN
-				o_poly_lum<=poly_lum(o_h_lum_pix);
+				o_poly_lum <= poly_lum(o_h_lum_pix);
 				o_a_poly_addr<=to_integer(hfrac3_v);
 			END IF;
 
@@ -2764,7 +2758,9 @@ BEGIN
 					o_hcpt<=(o_hcpt+1) MOD 4096;
 				ELSE
 					o_hcpt<=0;
+				END IF;
 
+				IF o_hcpt+1 >= o_htotal THEN
 					IF o_vcpt_sync /= 4095 THEN
 						o_vcpt_sync <= o_vcpt_sync+1;
 					END IF;
