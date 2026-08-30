@@ -216,6 +216,7 @@ module emu
 		"-;",
 		"O[3:2],LCD Color,Green,Blue,Amber,B&W;",
 		"O[5:4],LCD Scale,4x,3x,2x,1x;",
+		"O6,Debug Overlay,On,Off;",
 		"-;",
 		"R0,Reset;",
 		"V,v1.0;"
@@ -666,6 +667,7 @@ module emu
 		.ack_ai6(ack_ai6),
 
 		.intack(intack_edge),
+		.ack_level(cpu_addr[3:1]),
 
 		.ipl(ipl),
 		.int_pend(int_pend)
@@ -691,40 +693,34 @@ module emu
 	// CPU (68000 core) and interrupt acknowledge
 	///////////////////////////////////////////////////////////////////////////
 
-	// IACK cycle: FC=111 with AS low. Driving VPA low during it grants the
-	// CPU an autovector interrupt (vector = 24 + level).
+	// IACK cycle: on TI-89 all hardware interrupts (levels 1..7) are autovectored.
+	// After boot completes (boot_done == 1), every FC=111 cycle with AS asserted
+	// is an Interrupt Acknowledge cycle, and VPA must stay asserted for the ENTIRE
+	// acknowledge bus cycle — not just while ipl != 0.
 	//
-	// Gate with ipl != 0: the reset vector fetches ($000000/$000004) also
-	// run with FC=111, and pulling VPA low during them would let the
-	// fx68k E-clock path terminate those cycles early and corrupt the
-	// initial SSP/PC. timer_int/keyboard/io_ports are held in cpu_reset
-	// until boot completes, so ipl is guaranteed 0 during that window.
-	wire intack_raw = (cpu_fc == 3'b111) && !cpu_as_n;
-
-	// Latch the IACK for the whole bus cycle. Once the CPU starts an
-	// interrupt-acknowledge sequence, VPA must stay asserted until AS is
-	// released. The pending-flag clear in timer_int happens on the first
-	// cycle of the IACK; if that was the only pending interrupt, ipl falls
-	// to 0 mid-sequence and a purely combinational gate deasserts VPA.
-	// fx68k then abandons the autovector and samples a garbage vector off
-	// the data bus (observed: AI1 ack picked up vector 20, [$50]=0, the
-	// CPU executed the vector table as code and cascaded into address
-	// errors forever). Latching at cycle start keeps the reset-vector
-	// guard too: those cycles begin with ipl == 0, so they never latch.
-	reg intack_latch;
+	// Without the latch: timer_int clears the pending flag as soon as intack_edge
+	// fires (one cycle into the IACK). If that was the ONLY pending interrupt, ipl
+	// drops to 0 mid-cycle, intack deasserts, VPA rises, and fx68k abandons the
+	// autovector — it terminates off-bus and samples the cpu_din value ($1414 =
+	// vector 20, unmapped) instead of the correct autovector. The CPU then jumps
+	// to garbage code at $14141x. (Run-10 dense trace, §15 of DEBUG_STATUS.md.)
+	//
+	// Fix: latch intack for the whole bus cycle. Set when FC=111 & AS & ipl!=0;
+	// clear when AS deasserts. vpa_n is driven from the latched version.
+	// The reset-vector guard is preserved: those cycles start with ipl==0 so
+	// they never latch (intack_raw stays 0 when ipl==0).
+	wire intack_raw = (cpu_fc == 3'b111) && !cpu_as_n && boot_done;
+	reg  intack_latch;
 	always @(posedge clk_sys) begin
 		if (cpu_as_n)
 			intack_latch <= 1'b0;
 		else if (intack_raw && (ipl != 3'd0))
 			intack_latch <= 1'b1;
 	end
-
 	wire intack = intack_raw && (ipl != 3'd0 || intack_latch);
 	wire vpa_n  = ~intack;
 
-	// One-cycle IACK strobe for timer_int's pending-flag clearing: a
-	// multi-cycle IACK would otherwise clear additional priority levels
-	// as ipl re-encodes when the first flag drops.
+	// One-cycle IACK strobe for timer_int's pending-flag clearing
 	reg intack_q;
 	always @(posedge clk_sys) intack_q <= intack;
 	assign intack_edge = intack && !intack_q;
@@ -822,6 +818,119 @@ module emu
 	                         !boot_done  ? 3'd3 :
 	                                     3'd4;
 
+	///////////////////////////////////////////////////////////////////////////
+	// Live debug tracking registers for on-screen HUD
+	///////////////////////////////////////////////////////////////////////////
+
+	reg [23:0] dbg_last_pc;
+	reg [23:0] dbg_last_addr;
+	reg [15:0] dbg_last_data;
+	reg        dbg_last_rw;
+	reg [15:0] dbg_intack_cnt;
+	reg [15:0] dbg_fl_wr_cnt;
+	reg        dbg_ai7_latch;
+
+	always @(posedge clk_sys) begin
+		if (reset) begin
+			dbg_last_pc    <= 24'd0;
+			dbg_last_addr  <= 24'd0;
+			dbg_last_data  <= 16'd0;
+			dbg_last_rw    <= 1'b1;
+			dbg_intack_cnt <= 16'd0;
+			dbg_fl_wr_cnt  <= 16'd0;
+			dbg_ai7_latch  <= 1'b0;
+		end else begin
+			if (!cpu_as_n) begin
+				dbg_last_addr <= {cpu_addr, 1'b0};
+				dbg_last_data <= cpu_rw_n ? cpu_din : cpu_dout;
+				dbg_last_rw   <= cpu_rw_n;
+				if (cpu_fc == 3'b010 || cpu_fc == 3'b110)
+					dbg_last_pc <= {cpu_addr, 1'b0};
+			end
+			if (intack_edge)
+				dbg_intack_cnt <= dbg_intack_cnt + 16'd1;
+			if (flash_wr)
+				dbg_fl_wr_cnt <= dbg_fl_wr_cnt + 16'd1;
+			if (ai7_hit)
+				dbg_ai7_latch <= 1'b1;
+		end
+	end
+
+	// On-screen HUD sample latch (updates 4 times per second for solid, readable digits)
+	reg [23:0] hud_timer;
+	reg [23:0] disp_pc;
+	reg [23:0] disp_addr;
+	reg [15:0] disp_data;
+	reg        disp_rw;
+	reg [15:0] disp_int_cnt;
+	reg [15:0] disp_flw_cnt;
+	reg  [2:0] disp_ipl;
+	reg        disp_lcd_on;
+	reg        disp_protect;
+	reg        disp_stopped;
+	reg        disp_ai7;
+
+	always @(posedge clk_sys) begin
+		if (reset) begin
+			hud_timer    <= 24'd0;
+			disp_pc      <= 24'd0;
+			disp_addr    <= 24'd0;
+			disp_data    <= 16'd0;
+			disp_rw      <= 1'b1;
+			disp_int_cnt <= 16'd0;
+			disp_flw_cnt <= 16'd0;
+			disp_ipl     <= 3'd0;
+			disp_lcd_on  <= 1'b0;
+			disp_protect <= 1'b0;
+			disp_stopped <= 1'b0;
+			disp_ai7     <= 1'b0;
+		end else begin
+			if (hud_timer >= 24'd15_000_000) begin
+				hud_timer    <= 24'd0;
+				disp_pc      <= dbg_last_pc;
+				disp_addr    <= dbg_last_addr;
+				disp_data    <= dbg_last_data;
+				disp_rw      <= dbg_last_rw;
+				disp_int_cnt <= dbg_intack_cnt;
+				disp_flw_cnt <= dbg_fl_wr_cnt;
+				disp_ipl     <= ipl;
+				disp_lcd_on  <= lcd_on;
+				disp_protect <= protect;
+				disp_stopped <= stopped;
+				disp_ai7     <= dbg_ai7_latch;
+			end else begin
+				hud_timer <= hud_timer + 24'd1;
+			end
+		end
+	end
+
+	///////////////////////////////////////////////////////////////////////////
+	// UART diagnostic transmitter (/dev/ttyS1 @ 115200 baud)
+	///////////////////////////////////////////////////////////////////////////
+
+	wire dbg_uart_txd;
+
+	dbg_uart dbg_uart
+	(
+		.clk(clk_sys),
+		.reset(reset),
+
+		.dbg_pc(dbg_last_pc),
+		.dbg_addr(dbg_last_addr),
+		.dbg_data(dbg_last_data),
+		.dbg_rw(dbg_last_rw),
+		.dbg_ipl(ipl),
+		.dbg_int_cnt(dbg_intack_cnt),
+		.dbg_flw_cnt(dbg_fl_wr_cnt),
+		.dbg_lcd_on(lcd_on),
+		.dbg_protect(protect),
+		.dbg_stopped(stopped),
+		.dbg_ai7(dbg_ai7_latch),
+		.boot_status(boot_status),
+
+		.txd(dbg_uart_txd)
+	);
+
 	video_scaler video_scaler
 	(
 		.clk(clk_sys),
@@ -833,6 +942,19 @@ module emu
 		.scale_sel(status[5:4]),
 		.color_sel(status[3:2]),
 		.boot_status(boot_status),
+
+		.dbg_en(~status[6]),
+		.dbg_pc(disp_pc),
+		.dbg_addr(disp_addr),
+		.dbg_data(disp_data),
+		.dbg_rw(disp_rw),
+		.dbg_ipl(disp_ipl),
+		.dbg_int_cnt(disp_int_cnt),
+		.dbg_flw_cnt(disp_flw_cnt),
+		.dbg_lcd_on(disp_lcd_on),
+		.dbg_protect(disp_protect),
+		.dbg_stopped(disp_stopped),
+		.dbg_ai7(disp_ai7),
 
 		.ce_pix(CE_PIXEL),
 		.R(VGA_R),
@@ -914,7 +1036,7 @@ module emu
 	assign DDRAM_WE       = 1'b0;
 
 	assign UART_RTS = 1'b0;
-	assign UART_TXD = 1'b1;
+	assign UART_TXD = dbg_uart_txd;
 	assign UART_DTR = 1'b0;
 
 	assign USER_OUT = 7'h7F;

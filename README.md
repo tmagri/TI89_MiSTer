@@ -10,6 +10,12 @@ The core recreates the TI-89 Titanium (HW3) on the Terasic DE10-Nano board: a cy
 
 > **Legal note:** The calculator's operating system image (`TI89Titanium_OS.89u`) is copyrighted by Texas Instruments. This project does **not** contain or distribute the OS image. You must supply your own `.89u` file and load it at runtime through the MiSTer OSD — the same pattern used for Amiga Kickstart ROMs in Minimig.
 
+## How this was built
+
+The RTL in this repository was written by an LLM working under human direction; all references listed below were used as part of the research. My contributions included research, architectural direction, and the use of existing software and hardware simulations to replicate the processes. Currently, research is focused on loading the image into memory to boot the OS. At this time, the project is not in a working state.
+
+This is stated upfront because it is fair for anyone evaluating the code to know. It is not an endorsement of the approach — draw your own conclusions.
+
 ## Core features
 
 * CPU: Motorola 68000 implemented with the [FX68K](https://github.com/ijor/fx68k) cycle-accurate core (~10.67 MHz effective clock)

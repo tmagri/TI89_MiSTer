@@ -12,6 +12,7 @@ set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) rtl/pll
 set_global_assignment -name VERILOG_FILE [file join $::quartus(qip_path) "rtl/pll/pll_0002.v"]
 set_global_assignment -name QIP_FILE     [file join $::quartus(qip_path) "rtl/pll/pll_0002.qip"]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/flash_ctrl.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/dbg_uart.sv]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/fx68k/fx68k.sv]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/fx68k/fx68kAlu.sv]
 set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) rtl/fx68k/uaddrPla.sv]

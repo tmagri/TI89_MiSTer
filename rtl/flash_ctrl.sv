@@ -67,6 +67,7 @@ module flash_ctrl (
                            //                0xD0 erasing, 0x90 ID mode)
     reg       wready;      // Next word write programs flash
     reg       ret_or;      // 1: reads return 0xFFFF (status mode)
+    reg       ret_or_bank; // which bank is in status mode
 
     // =========================================================================
     // Erase fill state
@@ -100,6 +101,7 @@ module flash_ctrl (
             phase       <= 8'h50;
             wready      <= 1'b0;
             ret_or      <= 1'b0;
+            ret_or_bank <= 1'b0;
             flash_rdata <= 16'd0;
             flash_ready <= 1'b0;
             sd_addr     <= 22'd0;
@@ -138,8 +140,8 @@ module flash_ctrl (
                             endcase
                             flash_ready <= 1'b1;
                             req_valid   <= 1'b0;
-                        end else if (ret_or) begin
-                            flash_rdata <= 16'h00B0;
+                        end else if (ret_or && (req_addr[21] == ret_or_bank)) begin
+                            flash_rdata <= erase_busy ? 16'h0000 : 16'h0080;
                             flash_ready <= 1'b1;
                             req_valid   <= 1'b0;
                         end else begin
@@ -154,36 +156,48 @@ module flash_ctrl (
                         state <= F_ERASE;
                     end else if (req_valid && req_rw) begin
                         // ---------------- Write ----------------
-                        if (!req_word) begin
-                            // Byte writes to flash are not implemented
-                            flash_ready <= 1'b1;
-                            req_valid   <= 1'b0;
-                        end else if (wready) begin
+                        if (wready) begin
                             // Program: read-modify-write
                             sd_addr  <= req_addr;
                             sd_rd    <= 1'b1;
                             sd_uds_n <= 1'b0;
                             sd_lds_n <= 1'b0;
                             state    <= F_PRWAIT;
+                            ret_or_bank <= req_addr[21];
                         end else begin
                             // Command word
                             flash_ready <= 1'b1;
                             req_valid   <= 1'b0;
-                            case (req_wdata)
-                                16'h5050: phase  <= 8'h50;
-                                16'h9090: phase  <= 8'h90;
-                                16'h1010: if (phase == 8'h50)
+                            case (req_word ? req_wdata[7:0] : (req_addr[0] ? req_wdata[7:0] : req_wdata[15:8]))
+                                8'h50: begin
+                                              phase  <= 8'h50;
+                                          end
+                                8'h70: begin
+                                              phase  <= 8'h70;
+                                              ret_or <= 1'b1;
+                                              ret_or_bank <= req_addr[21];
+                                          end
+                                8'h90: begin
+                                              phase  <= 8'h90;
+                                              ret_or <= 1'b0;
+                                          end
+                                8'h10, 8'h40: begin
                                               wready <= 1'b1;
-                                16'h2020: if (phase == 8'h50)
+                                              phase  <= req_word ? req_wdata[7:0] : (req_addr[0] ? req_wdata[7:0] : req_wdata[15:8]);
+                                          end
+                                8'h20: begin
                                               phase <= 8'h20;
-                                16'hD0D0: if (phase == 8'h20) begin
+                                          end
+                                8'hD0: if (phase == 8'h20) begin
                                               phase       <= 8'hD0;
                                               ret_or      <= 1'b1;
+                                              ret_or_bank <= req_addr[21];
                                               erase_busy  <= 1'b1;
                                               erase_waddr <= {req_addr[21:16], 15'd0};
                                               erase_left  <= 16'h8000;
                                           end
-                                16'hFFFF: if (phase == 8'h50 || phase == 8'h90) begin
+                                8'hFF: begin
+                                              phase  <= 8'h50;
                                               wready <= 1'b0;
                                               ret_or <= 1'b0;
                                           end
@@ -209,7 +223,7 @@ module flash_ctrl (
                 F_PRWAIT: begin
                     if (sd_ready) begin
                         sd_addr  <= req_addr;
-                        sd_wdata <= sd_rdata & req_wdata;
+                        sd_wdata <= sd_rdata & (req_word ? req_wdata : (req_addr[0] ? {8'hFF, req_wdata[7:0]} : {req_wdata[15:8], 8'hFF}));
                         sd_wr    <= 1'b1;
                         sd_uds_n <= 1'b0;
                         sd_lds_n <= 1'b0;

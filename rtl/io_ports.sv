@@ -102,14 +102,14 @@ module io_ports (
     // low-power state the OS idles in.
     wire        wr_hi   = wr && !uds_n;
     wire        wr_lo   = wr && !lds_n;
-    wire [8:0]  addr_lo = (!lds_n) ? {1'b0, addr} + 9'd1   // word or odd byte
-                                   : {1'b0, addr};
+    wire [8:0]  addr_hi = {addr, 1'b0};
+    wire [8:0]  addr_lo = {addr, 1'b0} + 9'd1;
 
     // =========================================================================
     // I/O Bank 1 — $600000 (32 bytes, mirrored, addr & 31)
     // =========================================================================
 
-    wire [4:0] a1 = addr[4:0];
+    wire [4:0] a1 = addr_hi[4:0];
     wire [4:0] a1_lo = addr_lo[4:0];
 
     task io1_write(input [4:0] a, input [7:0] d);
@@ -178,7 +178,7 @@ module io_ports (
     // I/O Bank 2 — $700000 (64 bytes, addr & 63)
     // =========================================================================
 
-    wire [5:0] a2 = addr[5:0];
+    wire [5:0] a2 = addr_hi[5:0];
     wire [5:0] a2_lo = addr_lo[5:0];
 
     // $70001D bit 7 toggles every LCD frame (free-running status bit)
@@ -225,7 +225,7 @@ module io_ports (
         end
     end
 
-    wire [7:0] a3 = addr;
+    wire [7:0] a3 = addr_hi[7:0];
     wire [7:0] a3_lo = addr_lo[7:0];
 
     // =========================================================================

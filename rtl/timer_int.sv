@@ -59,6 +59,7 @@ module timer_int (
 
     // CPU interrupt acknowledge (IACK bus cycle, from TI89.sv)
     input         intack,
+    input   [2:0] ack_level,     // cpu_addr[3:1] — the level the CPU is acknowledging
 
     // Interrupt output to CPU (active-high level, 0 = none)
     output reg [2:0] ipl,
@@ -199,10 +200,10 @@ module timer_int (
             if (ack_ai2) ai2_pending <= 1'b0;
             if (ack_ai6) ai6_pending <= 1'b0;
 
-            // CPU interrupt acknowledge: clear whichever flag is driving the
-            // current IPL (the CPU has accepted that level).
+            // CPU interrupt acknowledge: clear the flag for the level the CPU
+            // is actively acknowledging on address lines A3..A1 (ack_level).
             if (intack) begin
-                case (ipl)
+                case (ack_level)
                     3'd1: ai1_pending <= 1'b0;
                     3'd2: ai2_pending <= 1'b0;
                     3'd3: ai3_pending <= 1'b0;

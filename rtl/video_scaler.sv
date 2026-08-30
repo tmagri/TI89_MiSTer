@@ -71,6 +71,20 @@ module video_scaler (
     //   4 = normal palette raster (boot_done)
     input       [2:0] boot_status,
 
+    // Real-time live debug hex overlay inputs
+    input             dbg_en,
+    input      [23:0] dbg_pc,
+    input      [23:0] dbg_addr,
+    input      [15:0] dbg_data,
+    input             dbg_rw,
+    input       [2:0] dbg_ipl,
+    input      [15:0] dbg_int_cnt,
+    input      [15:0] dbg_flw_cnt,
+    input             dbg_lcd_on,
+    input             dbg_protect,
+    input             dbg_stopped,
+    input             dbg_ai7,
+
     // VGA output (directly to the emu module outputs)
     output reg        ce_pix,     // Output pixel strobe (based on clk)
     output reg  [7:0] R,
@@ -441,7 +455,151 @@ module video_scaler (
         endcase
     end
 
-    wire [23:0] draw_rgb = (boot_status != 3'd4) ? status_rgb : pix_rgb;
+    // =========================================================================
+    // Real-Time On-Screen Visual Debug Hex Overlay HUD
+    // =========================================================================
+    // Displays a 2-line HUD on LCD rows 0..11 across columns 0..159 (40 chars/line):
+    // Line 0: "PC:XXXXXX A:XXXXXX D:XXXX RD IPL:X"
+    // Line 1: "INT:XXXX FLW:XXXX L:1 P:1 S:0 7:0 ST:4"
+
+    wire       hud_line = (grp >= 10'd6);
+    wire [2:0] hud_y    = (grp < 10'd6) ? grp[2:0] : (grp[2:0] - 3'd6);
+    wire [5:0] hud_col  = px_idx[7:2]; // 0..39
+    wire [1:0] hud_x    = px_idx[1:0]; // 0..3
+
+    reg [5:0] char_code;
+
+    always @(*) begin
+        if (!hud_line) begin
+            case (hud_col)
+                6'd0:  char_code = 6'd18; // 'P'
+                6'd1:  char_code = 6'd19; // 'C'
+                6'd2:  char_code = 6'd17; // ':'
+                6'd3:  char_code = {2'b00, dbg_pc[23:20]};
+                6'd4:  char_code = {2'b00, dbg_pc[19:16]};
+                6'd5:  char_code = {2'b00, dbg_pc[15:12]};
+                6'd6:  char_code = {2'b00, dbg_pc[11:8]};
+                6'd7:  char_code = {2'b00, dbg_pc[7:4]};
+                6'd8:  char_code = {2'b00, dbg_pc[3:0]};
+                6'd9:  char_code = 6'd16; // ' '
+                6'd10: char_code = 6'd20; // 'A'
+                6'd11: char_code = 6'd17; // ':'
+                6'd12: char_code = {2'b00, dbg_addr[23:20]};
+                6'd13: char_code = {2'b00, dbg_addr[19:16]};
+                6'd14: char_code = {2'b00, dbg_addr[15:12]};
+                6'd15: char_code = {2'b00, dbg_addr[11:8]};
+                6'd16: char_code = {2'b00, dbg_addr[7:4]};
+                6'd17: char_code = {2'b00, dbg_addr[3:0]};
+                6'd18: char_code = 6'd16; // ' '
+                6'd19: char_code = 6'd21; // 'D'
+                6'd20: char_code = 6'd17; // ':'
+                6'd21: char_code = {2'b00, dbg_data[15:12]};
+                6'd22: char_code = {2'b00, dbg_data[11:8]};
+                6'd23: char_code = {2'b00, dbg_data[7:4]};
+                6'd24: char_code = {2'b00, dbg_data[3:0]};
+                6'd25: char_code = 6'd16; // ' '
+                6'd26: char_code = dbg_rw ? 6'd22 : 6'd23; // 'R' or 'W'
+                6'd27: char_code = dbg_rw ? 6'd21 : 6'd22; // 'D' or 'R' (RD or WR)
+                6'd28: char_code = 6'd16; // ' '
+                6'd29: char_code = 6'd24; // 'I'
+                6'd30: char_code = 6'd18; // 'P'
+                6'd31: char_code = 6'd28; // 'L'
+                6'd32: char_code = 6'd17; // ':'
+                6'd33: char_code = {3'b000, dbg_ipl};
+                default: char_code = 6'd16; // ' '
+            endcase
+        end else begin
+            case (hud_col)
+                6'd0:  char_code = 6'd24; // 'I'
+                6'd1:  char_code = 6'd25; // 'N'
+                6'd2:  char_code = 6'd26; // 'T'
+                6'd3:  char_code = 6'd17; // ':'
+                6'd4:  char_code = {2'b00, dbg_int_cnt[15:12]};
+                6'd5:  char_code = {2'b00, dbg_int_cnt[11:8]};
+                6'd6:  char_code = {2'b00, dbg_int_cnt[7:4]};
+                6'd7:  char_code = {2'b00, dbg_int_cnt[3:0]};
+                6'd8:  char_code = 6'd16; // ' '
+                6'd9:  char_code = 6'd27; // 'F'
+                6'd10: char_code = 6'd28; // 'L'
+                6'd11: char_code = 6'd23; // 'W'
+                6'd12: char_code = 6'd17; // ':'
+                6'd13: char_code = {2'b00, dbg_flw_cnt[15:12]};
+                6'd14: char_code = {2'b00, dbg_flw_cnt[11:8]};
+                6'd15: char_code = {2'b00, dbg_flw_cnt[7:4]};
+                6'd16: char_code = {2'b00, dbg_flw_cnt[3:0]};
+                6'd17: char_code = 6'd16; // ' '
+                6'd18: char_code = 6'd28; // 'L'
+                6'd19: char_code = 6'd17; // ':'
+                6'd20: char_code = dbg_lcd_on ? 6'd1 : 6'd0;
+                6'd21: char_code = 6'd16; // ' '
+                6'd22: char_code = 6'd18; // 'P'
+                6'd23: char_code = 6'd17; // ':'
+                6'd24: char_code = dbg_protect ? 6'd1 : 6'd0;
+                6'd25: char_code = 6'd16; // ' '
+                6'd26: char_code = 6'd29; // 'S'
+                6'd27: char_code = 6'd17; // ':'
+                6'd28: char_code = dbg_stopped ? 6'd1 : 6'd0;
+                6'd29: char_code = 6'd16; // ' '
+                6'd30: char_code = 6'd7;  // '7'
+                6'd31: char_code = 6'd17; // ':'
+                6'd32: char_code = dbg_ai7 ? 6'd1 : 6'd0;
+                6'd33: char_code = 6'd16; // ' '
+                6'd34: char_code = 6'd29; // 'S'
+                6'd35: char_code = 6'd26; // 'T'
+                6'd36: char_code = 6'd17; // ':'
+                6'd37: char_code = {3'b000, boot_status};
+                default: char_code = 6'd16; // ' '
+            endcase
+        end
+    end
+
+    reg [2:0] font_bits;
+    always @(*) begin
+        if (hud_y >= 3'd5) begin
+            font_bits = 3'b000;
+        end else begin
+            case (char_code)
+                6'd0:  case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b101; 3'd3: font_bits = 3'b101; default: font_bits = 3'b111; endcase
+                6'd1:  case (hud_y) 3'd0: font_bits = 3'b010; 3'd1: font_bits = 3'b110; 3'd2: font_bits = 3'b010; 3'd3: font_bits = 3'b010; default: font_bits = 3'b111; endcase
+                6'd2:  case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b001; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b100; default: font_bits = 3'b111; endcase
+                6'd3:  case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b001; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b001; default: font_bits = 3'b111; endcase
+                6'd4:  case (hud_y) 3'd0: font_bits = 3'b101; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b001; default: font_bits = 3'b001; endcase
+                6'd5:  case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b100; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b001; default: font_bits = 3'b111; endcase
+                6'd6:  case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b100; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b101; default: font_bits = 3'b111; endcase
+                6'd7:  case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b001; 3'd2: font_bits = 3'b010; 3'd3: font_bits = 3'b010; default: font_bits = 3'b010; endcase
+                6'd8:  case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b101; default: font_bits = 3'b111; endcase
+                6'd9:  case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b001; default: font_bits = 3'b111; endcase
+                6'd10: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b101; default: font_bits = 3'b101; endcase // 'A'
+                6'd11: case (hud_y) 3'd0: font_bits = 3'b110; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b110; 3'd3: font_bits = 3'b101; default: font_bits = 3'b110; endcase // 'B'
+                6'd12: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b100; 3'd2: font_bits = 3'b100; 3'd3: font_bits = 3'b100; default: font_bits = 3'b111; endcase // 'C'
+                6'd13: case (hud_y) 3'd0: font_bits = 3'b110; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b101; 3'd3: font_bits = 3'b101; default: font_bits = 3'b110; endcase // 'D'
+                6'd14: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b100; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b100; default: font_bits = 3'b111; endcase // 'E'
+                6'd15: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b100; 3'd2: font_bits = 3'b110; 3'd3: font_bits = 3'b100; default: font_bits = 3'b100; endcase // 'F'
+                6'd16: font_bits = 3'b000; // ' '
+                6'd17: case (hud_y) 3'd1: font_bits = 3'b010; 3'd3: font_bits = 3'b010; default: font_bits = 3'b000; endcase // ':'
+                6'd18: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b100; default: font_bits = 3'b100; endcase // 'P'
+                6'd19: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b100; 3'd2: font_bits = 3'b100; 3'd3: font_bits = 3'b100; default: font_bits = 3'b111; endcase // 'C'
+                6'd20: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b111; 3'd3: font_bits = 3'b101; default: font_bits = 3'b101; endcase // 'A'
+                6'd21: case (hud_y) 3'd0: font_bits = 3'b110; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b101; 3'd3: font_bits = 3'b101; default: font_bits = 3'b110; endcase // 'D'
+                6'd22: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b110; 3'd3: font_bits = 3'b101; default: font_bits = 3'b101; endcase // 'R'
+                6'd23: case (hud_y) 3'd0: font_bits = 3'b101; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b101; 3'd3: font_bits = 3'b111; default: font_bits = 3'b101; endcase // 'W'
+                6'd24: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b010; 3'd2: font_bits = 3'b010; 3'd3: font_bits = 3'b010; default: font_bits = 3'b111; endcase // 'I'
+                6'd25: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b101; 3'd2: font_bits = 3'b101; 3'd3: font_bits = 3'b101; default: font_bits = 3'b101; endcase // 'N'
+                6'd26: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b010; 3'd2: font_bits = 3'b010; 3'd3: font_bits = 3'b010; default: font_bits = 3'b010; endcase // 'T'
+                6'd27: case (hud_y) 3'd0: font_bits = 3'b111; 3'd1: font_bits = 3'b100; 3'd2: font_bits = 3'b110; 3'd3: font_bits = 3'b100; default: font_bits = 3'b100; endcase // 'F'
+                6'd28: case (hud_y) 3'd0: font_bits = 3'b100; 3'd1: font_bits = 3'b100; 3'd2: font_bits = 3'b100; 3'd3: font_bits = 3'b100; default: font_bits = 3'b111; endcase // 'L'
+                6'd29: case (hud_y) 3'd0: font_bits = 3'b011; 3'd1: font_bits = 3'b100; 3'd2: font_bits = 3'b010; 3'd3: font_bits = 3'b001; default: font_bits = 3'b110; endcase // 'S'
+                default: font_bits = 3'b000;
+            endcase
+        end
+    end
+
+    wire hud_pixel  = (hud_x < 2'd3) && font_bits[2 - hud_x];
+    wire hud_active = dbg_en && (grp < 10'd13);
+    wire [23:0] hud_rgb = (grp == 10'd12) ? 24'h306090 : (hud_pixel ? 24'hFFE020 : 24'h081018);
+
+    wire [23:0] active_rgb = hud_active ? hud_rgb : pix_rgb;
+    wire [23:0] draw_rgb   = (boot_status != 3'd4 && !hud_active) ? status_rgb : active_rgb;
 
     // Output registers
     always @(posedge clk) begin

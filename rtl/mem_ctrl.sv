@@ -621,15 +621,24 @@ module mem_ctrl (
                         end
 
                     end else if (sel_io && !req_boot) begin
-                        // I/O — register address/strobes for the next cycle
+                        // I/O — register address/strobes for the next cycle.
+                        // io_ports.sv reconstructs the even byte address as
+                        // {addr, 1'b0}, so addr must be a WORD index
+                        // (byte_offset / 2), not a raw byte offset.
+                        // Passing req_addr[4:0] (byte offset, always even)
+                        // would double every address: $600002 → addr=2 →
+                        // {2,0}=4 → io1[4] instead of io1[2].  Worse, the
+                        // lower byte of a word write to $600002 would land
+                        // at io1[5] ($600005 = STOP), halting the CPU before
+                        // any timer is configured.
                         if (sel_io1) begin
-                            io_addr <= req_addr[4:0];
+                            io_addr <= {3'd0, req_addr[5:1]};  // word idx (0-15) in 32-byte space
                             io_bank <= 2'd0;
                         end else if (sel_io2) begin
-                            io_addr <= req_addr[7:0];
+                            io_addr <= {2'd0, req_addr[7:1]};  // word idx (0-31) in 64-byte space
                             io_bank <= 2'd1;
                         end else begin
-                            io_addr <= req_addr[7:0];
+                            io_addr <= req_addr[8:1];           // word idx (0-127) in 256-byte space
                             io_bank <= 2'd2;
                         end
                         io_wdata <= req_wdata;
