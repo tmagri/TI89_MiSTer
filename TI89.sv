@@ -924,12 +924,21 @@ module emu
 		.dbg_flw_cnt(dbg_fl_wr_cnt),
 		.dbg_lcd_on(lcd_on),
 		.dbg_protect(protect),
-		.dbg_stopped(stopped),
-		.dbg_ai7(dbg_ai7_latch),
-		.boot_status(boot_status),
+	.dbg_stopped(stopped),
+	.dbg_ai7(dbg_ai7_latch),
+	.boot_status(boot_status),
 
-		.txd(dbg_uart_txd)
-	);
+	// Bus trace: raw CPU bus for the fault-triggered ring in dbg_uart
+	.tr_addr({cpu_addr, 1'b0}),
+	.tr_data(cpu_rw_n ? cpu_din : cpu_dout),
+	.tr_rw(cpu_rw_n),
+	.tr_fc(cpu_fc),
+	.tr_as_n(cpu_as_n),
+	.tr_ai7(ai7_hit),
+	.tr_boot_done(boot_done),
+
+	.txd(dbg_uart_txd)
+);
 
 	video_scaler video_scaler
 	(

@@ -47,6 +47,47 @@ SSH_OPTS="-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o LogLevel=ERROR -o B
 SSH_RETRY_TIMEOUT=120   # seconds to wait for MiSTer to come back after reboot
 SSH_RETRY_INTERVAL=5
 
+# ─── Compile-phase lock ───────────────────────────────────────────────────────
+# Only the Docker/Quartus compile phase must never double-run (concurrent
+# instances corrupt TI89.qsf / incremental_db -> errors 125085 + 293007).
+# Deploy-only and monitor-only invocations NEVER block; a --compile run
+# waits only while another compile is actually in flight.
+BUILD_LOCK="${PROJECT_DIR}/debug/.buildlock"
+
+build_lock_wait() {
+    if [ -d "$BUILD_LOCK" ]; then
+        local owner
+        owner=$(cat "$BUILD_LOCK/pid" 2>/dev/null || echo "?")
+        if [ -n "$owner" ] && [ "$owner" != "$$" ] && kill -0 "$owner" 2>/dev/null; then
+            warn "Another compile is running (pid $owner) — waiting for it to finish"
+            while [ -d "$BUILD_LOCK" ] && kill -0 "$owner" 2>/dev/null; do
+                sleep 10
+            done
+        else
+            rm -rf "$BUILD_LOCK"   # stale lock from a dead instance
+        fi
+    fi
+    # Belt and braces: an in-flight quartus compile with no lock
+    # (e.g. started by an older script version) also blocks us.
+    while pgrep -f "quartus_sh --flow compile" >/dev/null 2>&1; do
+        warn "quartus_sh compile in flight (no lock) — waiting"
+        sleep 10
+    done
+}
+
+build_lock_acquire() {
+    mkdir -p "$(dirname "$BUILD_LOCK")"
+    if ! mkdir "$BUILD_LOCK" 2>/dev/null; then
+        build_lock_wait
+        mkdir "$BUILD_LOCK" 2>/dev/null || fail "cannot acquire build lock"
+    fi
+    echo "$$" > "$BUILD_LOCK/pid"
+}
+
+build_lock_release() {
+    [ -d "$BUILD_LOCK" ] && [ "$(cat "$BUILD_LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$BUILD_LOCK"
+}
+
 # ─── Flags ────────────────────────────────────────────────────────────────────
 DO_COMPILE=false
 DO_REBOOT=true
@@ -184,16 +225,24 @@ if $DO_COMPILE && ! $MONITOR_ONLY; then
     echo
 
     COMPILE_LOG="/tmp/ti89_quartus_build.log"
+
+    build_lock_wait
+    build_lock_acquire
+    trap build_lock_release EXIT INT TERM
+
     spinner_start "Compiling TI89 core in Docker"
 
-    # Run Quartus full compilation inside the container
+    # Run Quartus full compilation inside the container.
+    # The QSF edit is idempotent (never appends a duplicate line: the
+    # 2026-08-31 double-run crash left duplicated assignments and
+    # Quartus rewrote the file mid-compile).
     set +e
     "$DOCKER_BIN" run --rm \
         --platform linux/amd64 \
         -v "${PROJECT_DIR}:/build:rw" \
         -w /build \
         "$QUARTUS_IMAGE" \
-        bash -c "export PATH=\$PATH:/opt/intelFPGA_lite/17.0/quartus/bin:/intelFPGA_lite/17.0/quartus/bin && echo 'set_global_assignment -name NUM_PARALLEL_PROCESSORS 1' >> TI89.qsf && quartus_sh --flow compile TI89.qpf" \
+        bash -c "export PATH=\$PATH:/opt/intelFPGA_lite/17.0/quartus/bin:/intelFPGA_lite/17.0/quartus/bin && grep -q 'NUM_PARALLEL_PROCESSORS 1' TI89.qsf || echo 'set_global_assignment -name NUM_PARALLEL_PROCESSORS 1' >> TI89.qsf; quartus_sh --flow compile TI89.qpf" \
         > "$COMPILE_LOG" 2>&1
     COMPILE_EXIT=$?
     set -e

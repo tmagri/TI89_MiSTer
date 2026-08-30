@@ -576,21 +576,29 @@ module mem_ctrl (
                 end
 
                 S_ACCESS: begin
-                    if (sel_ram && !req_boot) begin
+                    if (!req_rw && !req_boot && prot_arm &&
+                        (req_addr < 24'h000120)) begin
+                        // AI7 "vector table write protection" (TiEmu
+                        // mem.c hw_put_long/word/byte): a CPU write below
+                        // $000120 while $600001 bit 2 is armed raises the
+                        // level-7 autovector AND THE WRITE IS *BLOCKED*
+                        // ("if((adr < 0x120) && io_bit_tst(0x01,2))
+                        //   hw_m68k_irq(7); else put_long_ptr(...)").
+                        // The OS uses this deliberately as a soft-reboot
+                        // trigger (it arms bit 2, points the NMI vector
+                        // at the boot entry $812188, then writes low RAM
+                        // on purpose — the write's VALUE must never land).
+                        // Performing the write corrupted OS state and
+                        // derailed the post-NMI reboot (2026-08-31 HW
+                        // traces, dbg_uart fault dumps #0-#3).
+                        ai7_hit     <= 1'b1;
+                        cpu_dtack_n <= 1'b0;
+                        state       <= S_DONE;
+                    end else if (sel_ram && !req_boot) begin
                         // RAM — lives in SDRAM; queue the access and wait
                         // for the arbiter's completion pulse.
                         cpu_ram_want <= 1'b1;
                         state        <= S_WAITRAM;
-
-                        // AI7 (mem.c put_long/put_word/put_byte): a CPU
-                        // write below $000120 while $600001 bit 2 is armed
-                        // raises level-7 autovector. req_addr is the even-
-                        // aligned byte address ({cpu_addr, 1'b0}), so an
-                        // odd byte write to $11F arrives as $11E and still
-                        // qualifies. The write itself completes; the NMI
-                        // hits after the current instruction.
-                        if (!req_rw && prot_arm && (req_addr < 24'h000120))
-                            ai7_hit <= 1'b1;
 
                     end else if (sel_flash) begin
                         // FLASH via flash_ctrl (WSM + SDRAM), subject to
