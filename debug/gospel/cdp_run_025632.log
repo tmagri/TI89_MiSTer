@@ -1,0 +1,11 @@
+file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:84
+    if (r.exceptionDetails) throw new Error("page: " + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
+                                  ^
+
+Error: page: TypeError: Failed to fetch
+    at <anonymous>:2:24
+    at <anonymous>:12:3
+    at evalJs (file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:84:35)
+    at async file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:95:12
+
+Node.js v24.10.0

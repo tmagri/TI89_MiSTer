@@ -1,0 +1,6 @@
+[6s] wiring: wired
+[6s] loadrom: setRom+initemu, payloadWords=699971
+[6s] S1 dump (paused, pre-format)…
+[7s] S1 dumped (pc=812458/2709)
+[7s] DERAILED: {"pc":"317a050","sr":"2710","a7":470,"banner":false,"home":false,"ok":false}
+[7s] forensics: {"pc":"317a050","sr":"2710","a7":"1d6","stack":["30784646","30303030","30300030","78333031","0","0","ff00","450000","60000","60000"],"dis":[null,null,null,null,null,null,null,null,null,null,null,null]}

@@ -1,0 +1,8 @@
+file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:101
+    throw new Error("page loaded but emu global missing (page did not initialize)");
+          ^
+
+Error: page loaded but emu global missing (page did not initialize)
+    at file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:101:11
+
+Node.js v24.10.0

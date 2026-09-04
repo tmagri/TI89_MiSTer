@@ -84,14 +84,18 @@ def build_golden(os_path):
     # synthesized header
     struct.pack_into(">I", img, 0x100, 0xFEEDBABE)
     struct.pack_into(">I", img, HWID_PTR, 0x00800108)
-    # HWPB (little-endian fields, per n-89 convert.rs HwParamBlock)
-    struct.pack_into("<H", img, HWID_OFF + 0x00, 0x0018)   # len
-    struct.pack_into("<I", img, HWID_OFF + 0x02, 9)        # hardware ID (89T)
-    struct.pack_into("<I", img, HWID_OFF + 0x06, 2)        # hardware revision
-    struct.pack_into("<I", img, HWID_OFF + 0x0A, 1)        # boot major
-    struct.pack_into("<I", img, HWID_OFF + 0x0E, 1)        # boot revision
-    struct.pack_into("<I", img, HWID_OFF + 0x12, 1)        # boot build
-    struct.pack_into("<I", img, HWID_OFF + 0x16, 3)        # gate array (HW3)
+    # HWPB — big-endian 16-bit words (the 68k reads them with move.w; v12.js
+    # writes exactly these words, and the hardware-verified run-8 readback
+    # matches. The n-89 convert.rs field structs resolve to the same bytes.)
+    hwpb_words = [0x0018,        # len = 24
+                  0x0000, 0x0009,  # hardware ID = 9 (TI-89 Titanium)
+                  0x0000, 0x0002,  # hardware revision = 2
+                  0x0000, 0x0001,  # boot major = 1
+                  0x0000, 0x0001,  # boot revision = 1
+                  0x0000, 0x0001,  # boot build = 1
+                  0x0000, 0x0003]  # gate array = 3 (HW3)
+    for i, w in enumerate(hwpb_words):
+        struct.pack_into(">H", img, HWID_OFF + 2 * i, w)
 
     # payload at chip 0x12000
     n = min(len(payload), ROM_SIZE - SPP)

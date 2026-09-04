@@ -1,0 +1,9 @@
+file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:49
+for (let i = 0; i < 40 && !(await serverUp()); i++) await sleep(500);
+                                                    ^
+
+ReferenceError: Cannot access 'sleep' before initialization
+    at file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:49:53
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+
+Node.js v24.10.0

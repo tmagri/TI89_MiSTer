@@ -1,0 +1,63 @@
+[6s] wiring: wired
+[6s] loadrom: loaded 1400021 bytes
+[8s] S1 dump (paused)…
+[8s] S1 dumped (pc=95c5e6/2004)
+[13s] pc=$10 banner=false home=false
+[18s] pc=$40000 banner=false home=false
+[23s] pc=$40000 banner=false home=false
+[28s] pc=$40000 banner=false home=false
+[33s] pc=$40000 banner=false home=false
+[38s] pc=$40000 banner=false home=false
+[43s] pc=$40000 banner=false home=false
+[48s] pc=$40000 banner=false home=false
+[53s] pc=$40000 banner=false home=false
+[58s] pc=$40000 banner=false home=false
+[63s] pc=$40000 banner=false home=false
+[68s] pc=$40000 banner=false home=false
+[73s] pc=$40000 banner=false home=false
+[78s] pc=$40000 banner=false home=false
+[83s] pc=$40000 banner=false home=false
+[88s] pc=$40000 banner=false home=false
+[93s] pc=$40000 banner=false home=false
+[98s] pc=$40000 banner=false home=false
+[103s] pc=$40000 banner=false home=false
+[108s] pc=$40000 banner=false home=false
+[113s] pc=$40000 banner=false home=false
+[118s] pc=$40000 banner=false home=false
+[123s] pc=$40000 banner=false home=false
+[128s] pc=$40000 banner=false home=false
+[133s] pc=$40000 banner=false home=false
+[138s] pc=$40000 banner=false home=false
+[143s] pc=$40000 banner=false home=false
+[148s] pc=$40000 banner=false home=false
+[153s] pc=$40000 banner=false home=false
+[158s] pc=$40000 banner=false home=false
+[163s] pc=$40000 banner=false home=false
+[168s] pc=$40000 banner=false home=false
+[173s] pc=$40000 banner=false home=false
+[178s] pc=$40000 banner=false home=false
+[183s] pc=$40000 banner=false home=false
+[188s] pc=$40000 banner=false home=false
+[193s] pc=$40000 banner=false home=false
+[198s] pc=$40000 banner=false home=false
+[203s] pc=$40000 banner=false home=false
+[208s] pc=$40000 banner=false home=false
+[213s] pc=$40000 banner=false home=false
+[218s] pc=$40000 banner=false home=false
+[223s] pc=$40000 banner=false home=false
+[228s] pc=$40000 banner=false home=false
+[233s] pc=$40000 banner=false home=false
+[238s] pc=$40000 banner=false home=false
+[243s] pc=$40000 banner=false home=false
+[248s] pc=$40000 banner=false home=false
+file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:92
+    if (r.exceptionDetails) throw new Error("page: " + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
+                                  ^
+
+Error: page: ReferenceError: emu is not defined
+    at <anonymous>:2:17
+    at <anonymous>:5:7
+    at evalJs (file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:92:35)
+    at async file:///Users/troymagri/Desktop/TI89_MiSTer/debug/gospel/cdp_gospel.mjs:189:16
+
+Node.js v24.10.0
