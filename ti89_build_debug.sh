@@ -8,6 +8,7 @@
 #   ./ti89_build_debug.sh --compile    Compile first via Docker, then deploy+monitor
 #   ./ti89_build_debug.sh --no-reboot  Deploy but skip the MiSTer reboot step
 #   ./ti89_build_debug.sh --monitor    SSH into MiSTer UART monitor only (skip deploy)
+#   ./ti89_build_debug.sh --kill       Kill stuck Docker/Quartus processes and clear locks
 #
 # Requirements:
 #   - Docker Desktop installed at /Applications/Docker.app
@@ -93,14 +94,16 @@ DO_COMPILE=false
 DO_REBOOT=true
 MONITOR_ONLY=false
 ROM_MISSING=false
+DO_KILL=false
 
 for arg in "$@"; do
     case "$arg" in
         --compile)      DO_COMPILE=true ;;
         --no-reboot)    DO_REBOOT=false ;;
         --monitor|--monitor-only) MONITOR_ONLY=true ;;
+        --kill)         DO_KILL=true ;;
         --help|-h)
-            sed -n '4,18p' "$0" | sed 's/^# //' | sed 's/^#//'
+            sed -n '4,19p' "$0" | sed 's/^# //' | sed 's/^#//'
             exit 0
             ;;
         *)
@@ -145,6 +148,36 @@ spinner_stop() {
     fi
 }
 trap spinner_stop EXIT
+
+# =============================================================================
+# PRE-PHASE: Kill stuck processes (if --kill is passed)
+# =============================================================================
+if $DO_KILL; then
+    step "Killing stuck compile processes and clearing locks"
+    
+    log "Stopping lingering ryanfb/quartus-mister Docker containers..."
+    if [[ -x "$DOCKER_BIN" ]]; then
+        CONTAINERS=$("$DOCKER_BIN" ps -q --filter ancestor="$QUARTUS_IMAGE" 2>/dev/null || echo "")
+        if [[ -n "$CONTAINERS" ]]; then
+            "$DOCKER_BIN" kill $CONTAINERS >/dev/null 2>&1 || true
+            ok "Containers stopped."
+        else
+            ok "No lingering containers found."
+        fi
+    fi
+
+    log "Force-quitting background quartus_sh processes..."
+    pkill -f "quartus_sh" 2>/dev/null || true
+    ok "Background processes terminated."
+
+    log "Removing stale build locks..."
+    rm -rf "$BUILD_LOCK"
+    ok "Build locks cleared."
+    
+    echo
+    ok "Cleanup complete. You can now run with --compile again."
+    exit 0
+fi
 
 # =============================================================================
 # PHASE 0: Pre-flight checks

@@ -22,7 +22,14 @@
 //     ID mode:     addr&0xFFFE == 0 -> 0x00B0 (manufacturer, Sharp)
 //                  addr&0xFFFE == 2 -> 0x00B5 (device, LH28F320BF)
 //                  anything else    -> 0xFFFF
-//     busy status: 0xFFFF (after program/erase until 0xFFFF reset)
+//     status mode: 0x0080 (DQ7 = ready, no error bits) after program or
+//                  erase — always ready, exactly like the references
+//                  (v12.js flash_ret_or / TiEmu wsm.ret_or complete
+//                  instantly). Chip-global until 0xFFFF resets to array
+//                  reads, like the real single WSM; the OS's flash
+//                  routines poll status from a command/status pointer that
+//                  may sit in a different 2 MB half than the data pointer,
+//                  so status must never be scoped to one bank.
 //     otherwise:   the SDRAM word
 //
 // Byte writes to flash are ignored (the reference model does not
@@ -66,8 +73,7 @@ module flash_ctrl (
     reg [7:0] phase;       // Write phase (0x50 idle, 0x20 erase setup,
                            //                0xD0 erasing, 0x90 ID mode)
     reg       wready;      // Next word write programs flash
-    reg       ret_or;      // 1: reads return 0xFFFF (status mode)
-    reg       ret_or_bank; // which bank is in status mode
+    reg       ret_or;      // 1: reads return WSM status (chip-global)
 
     // =========================================================================
     // Erase fill state
@@ -101,7 +107,6 @@ module flash_ctrl (
             phase       <= 8'h50;
             wready      <= 1'b0;
             ret_or      <= 1'b0;
-            ret_or_bank <= 1'b0;
             flash_rdata <= 16'd0;
             flash_ready <= 1'b0;
             sd_addr     <= 22'd0;
@@ -127,8 +132,8 @@ module flash_ctrl (
                 // -----------------------------------------------------
                 F_IDLE: begin
                     // Reads go first: while an erase fill is running
-                    // ret_or is set, so they return 0xFFFF immediately
-                    // and never stall behind the fill.
+                    // ret_or is set, so they report ready status (0x0080)
+                    // immediately and never stall behind the fill.
                     if (req_valid && !req_rw) begin
                         // ---------------- Read ----------------
                         if (phase == 8'h90) begin
@@ -140,8 +145,15 @@ module flash_ctrl (
                             endcase
                             flash_ready <= 1'b1;
                             req_valid   <= 1'b0;
-                        end else if (ret_or && (req_addr[21] == ret_or_bank)) begin
-                            flash_rdata <= erase_busy ? 16'h0000 : 16'h0080;
+                        end else if (ret_or) begin
+                            // Status register: DQ7 set = WSM ready. Both
+                            // references report ready immediately (v12
+                            // flash_ret_or / TiEmu wsm.ret_or — writes are
+                            // instantaneous there); our erase fill still
+                            // runs to completion before any deferred write
+                            // command is serviced, so command ordering is
+                            // preserved without ever reporting busy.
+                            flash_rdata <= 16'h0080;
                             flash_ready <= 1'b1;
                             req_valid   <= 1'b0;
                         end else begin
@@ -163,7 +175,6 @@ module flash_ctrl (
                             sd_uds_n <= 1'b0;
                             sd_lds_n <= 1'b0;
                             state    <= F_PRWAIT;
-                            ret_or_bank <= req_addr[21];
                         end else begin
                             // Command word
                             flash_ready <= 1'b1;
@@ -175,7 +186,6 @@ module flash_ctrl (
                                 8'h70: begin
                                               phase  <= 8'h70;
                                               ret_or <= 1'b1;
-                                              ret_or_bank <= req_addr[21];
                                           end
                                 8'h90: begin
                                               phase  <= 8'h90;
@@ -191,7 +201,6 @@ module flash_ctrl (
                                 8'hD0: if (phase == 8'h20) begin
                                               phase       <= 8'hD0;
                                               ret_or      <= 1'b1;
-                                              ret_or_bank <= req_addr[21];
                                               erase_busy  <= 1'b1;
                                               erase_waddr <= {req_addr[21:16], 15'd0};
                                               erase_left  <= 16'h8000;

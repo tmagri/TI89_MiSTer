@@ -27,6 +27,7 @@ incremental_db/
 greybox_tmp/
 hc_output/
 simulation/
+archive/
 .qsys_edit/
 hps_isw_handoff/
 sys/vip/
@@ -51,3 +52,5 @@ PLLJ_PLLSPE_INFO.txt
 *.orig
 *.rej
 *~
+debug/.buildlock/pid
+debug/readback/build_run8.log

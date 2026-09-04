@@ -37,6 +37,11 @@
 // Boot: a .89u OS upgrade has no boot block. After the image is loaded
 // into SDRAM (at byte offset 0), this controller performs the same steps
 // TiEmu does in reset_calculator():
+//   0. (diagnostic build) dump the whole 4MB flash image back out over
+//      the dbg_uart link — DUMP_PASSES times — so the host can verify,
+//      byte for byte, both what the loader wrote and what the SDRAM
+//      read path returns (a deterministic mismatch indicts the load
+//      path; a pass-to-pass varying mismatch indicts read timing),
 //   1. clear all RAM,
 //   2. copy 128 words from image offset $12088 (the OS header, which
 //      begins with the initial SSP and PC long words) to RAM $000000,
@@ -128,7 +133,21 @@ module mem_ctrl (
     // interrupt is taken after the current instruction, exactly like the
     // reference.
     input         prot_arm,
-    output reg    ai7_hit
+    output reg    ai7_hit,
+
+    // ---- Pre-boot SDRAM image dump (diagnostic) ----
+    // Streams the 4MB flash image to dbg_uart, DUMP_PASSES times, while
+    // the CPU is still held in reset. Handshake: mem_ctrl pulses
+    // dump_stb (dump_word valid) only in a cycle where dump_rdy is high;
+    // dbg_uart drops dump_rdy until it has shifted both bytes out.
+    // dump_pass_stb marks the start of each pass (dbg_uart prints a
+    // "$P<n>" line); dump_active covers the whole dump so dbg_uart can
+    // suppress its periodic status lines.
+    input             dump_rdy,
+    output            dump_stb,     // combinational: valid exactly when dump_rdy
+    output     [15:0] dump_word,
+    output reg        dump_pass_stb,
+    output            dump_active
 );
 
     // =========================================================================
@@ -191,6 +210,15 @@ module mem_ctrl (
     // Boot FSM RAM-write parameters (held until taken into the slot)
     reg [24:0] boot_ram_addr;
     reg [15:0] boot_ram_wdata;
+    reg        boot_ram_we;   // 0 = boot RAM-slot request is a READ (dump)
+
+    // ---- Pre-boot dump registers (see port comment) ----
+    reg  [15:0] dump_rd_data;  // word latched by the grant FSM (reads)
+    reg  [20:0] dump_idx;      // SDRAM word index within the 4MB image
+    reg  [1:0]  dump_pass;     // pass counter 0..DUMP_PASSES-1
+    reg         dwait_rd;      // read completed, waiting for dump_rdy
+
+    assign dump_word  = dump_rd_data;
 
     // Bus FSM latched request registers (declared here because the RAM
     // slot samples them combinationally when it loads a CPU request)
@@ -269,7 +297,7 @@ module mem_ctrl (
                 end else if (boot_ram_want) begin
                     ram_valid <= 1'b1;
                     ram_src   <= SRC_BOOT;
-                    ram_wr    <= 1'b1;
+                    ram_wr    <= boot_ram_we;   // 0 for dump reads
                     ram_addr  <= boot_ram_addr;
                     ram_wdata <= boot_ram_wdata;
                     ram_uds_n <= 1'b0;
@@ -300,6 +328,7 @@ module mem_ctrl (
             lcd_ram_data <= 16'd0;
             cpu_ram_done <= 1'b0;
             boot_ram_done<= 1'b0;
+            dump_rd_data <= 16'd0;
         end else begin
             sd_rd         <= 1'b0;
             sd_wr         <= 1'b0;
@@ -346,7 +375,13 @@ module mem_ctrl (
                                 lcd_ram_ack  <= 1'b1;
                             end
                             SRC_CPU:  cpu_ram_done  <= 1'b1;
-                            SRC_BOOT: boot_ram_done <= 1'b1;
+                            SRC_BOOT: begin
+                                // Dump reads latch their word here; the
+                                // boot FSM's done pulse covers writes too.
+                                if (!ram_wr)
+                                    dump_rd_data <= sd_rdata;
+                                boot_ram_done <= 1'b1;
+                            end
                         endcase
                         grant <= G_NONE;
                     end
@@ -393,6 +428,46 @@ module mem_ctrl (
     wire sel_io3   = (req_addr[23:16] == 8'h71) && (req_addr[15:8] == 8'h00);
     wire sel_io    = sel_io1 || sel_io2 || sel_io3;
     wire sel_flash = (req_addr[23:22] == 2'b10);         // $800000-$BFFFFF
+
+    // =========================================================================
+    // Boot FSM state (declared here, before the hwprot/bus-FSM sections,
+    // because cyc_start below references boot_req)
+    // =========================================================================
+    localparam [3:0] B_WAIT   = 4'd0;
+    localparam [3:0] B_CLEAR  = 4'd1;
+    localparam [3:0] B_COPY   = 4'd2;
+    localparam [3:0] B_CWAIT  = 4'd3;
+    localparam [3:0] B_RWRITE = 4'd4;
+    localparam [3:0] B_DONE   = 4'd5;
+    localparam [3:0] B_DPASS  = 4'd6; // dump: emit pass marker
+    localparam [3:0] B_DREQ   = 4'd7; // dump: launch SDRAM read
+    localparam [3:0] B_DWAIT  = 4'd8; // dump: read done -> UART, advance
+
+    // Number of full-image read-back passes before the boot proceeds
+    // (1: the 4MB image was verified bit-exact on hardware 2026-09-01;
+    // kept as a load-integrity canary rather than full verification)
+    localparam [1:0] DUMP_PASSES = 2'd1;
+
+    reg [3:0]  boot_state;
+    reg [16:0] clr_idx;    // RAM clear index  (0..131071)
+    reg [6:0]  boot_idx;   // Header word index (0..127)
+
+    assign dump_active = (boot_state == B_DPASS) || (boot_state == B_DREQ) ||
+                         (boot_state == B_DWAIT);
+
+    // Combinational strobe: asserted in the SAME cycle dump_rdy is high,
+    // so dbg_uart's (dump_stb && du_state == DU_IDLE) acceptance can never
+    // miss. (The previous registered version pulsed one cycle later and
+    // lost words whenever the producer left IDLE in that gap — visible as
+    // the missing word 0 of dump passes 1/2 on 2026-09-01.)
+    assign dump_stb   = (boot_state == B_DWAIT) && dwait_rd && dump_rdy;
+
+    // Boot FSM handshake: one flash-window read per header word
+    wire boot_req = (boot_state == B_COPY);
+    reg  boot_ack;      // Boot read data consumed this cycle
+
+    // (boot_ram_addr / boot_ram_wdata are declared near the RAM slot
+    // above; the boot FSM drives them, the slot consumes them.)
 
     // =========================================================================
     // Flash protection — TiEmu hwprot.c (HW2+/HW3 paths)
@@ -480,25 +555,10 @@ module mem_ctrl (
         end
     end
 
-    // Boot FSM state (declared here so the bus FSM above can reference it)
-    localparam [2:0] B_WAIT   = 3'd0;
-    localparam [2:0] B_CLEAR  = 3'd1;
-    localparam [2:0] B_COPY   = 3'd2;
-    localparam [2:0] B_CWAIT  = 3'd3;
-    localparam [2:0] B_RWRITE = 3'd4;
-    localparam [2:0] B_DONE   = 3'd5;
-
-    reg [2:0]  boot_state;
-    reg [16:0] clr_idx;    // RAM clear index  (0..131071)
-    reg [6:0]  boot_idx;   // Header word index (0..127)
-
-    // Boot FSM handshake: one flash-window read per header word
-    wire boot_req = (boot_state == B_COPY);
-    reg  boot_ack;      // Boot read data consumed this cycle
-
-    // (boot_ram_addr / boot_ram_wdata are declared near the RAM slot
-    // above; the boot FSM drives them, the slot consumes them.)
-
+    // =========================================================================
+    // Bus cycle state machine
+    // =========================================================================
+    // (S_* states and 'state' declared above, before the hwprot section.)
     always @(posedge clk) begin
         if (reset) begin
             state        <= S_IDLE;
@@ -718,6 +778,10 @@ module mem_ctrl (
     // =========================================================================
     // B_WAIT   : wait until an OS image has been loaded into SDRAM and the
     //            SDRAM controller is initialized
+    // B_DPASS  : request the "$P<n>" pass marker from dbg_uart
+    // B_DREQ   : queue an SDRAM read of image word dump_idx (RAM slot)
+    // B_DWAIT  : on completion wait for dbg_uart readiness, pulse dump_stb,
+    //            advance (last word -> next pass or B_CLEAR)
     // B_CLEAR  : clear all RAM (TiEmu erases RAM upon reset) — one SDRAM
     //            write per word through the arbiter
     // B_COPY   : request a flash read of header word boot_idx (bus FSM)
@@ -735,7 +799,15 @@ module mem_ctrl (
             boot_ram_flying <= 1'b0;
             boot_ram_addr   <= 25'd0;
             boot_ram_wdata  <= 16'd0;
+            boot_ram_we     <= 1'b1;
+            dump_pass_stb   <= 1'b0;
+            dump_idx        <= 21'd0;
+            dump_pass       <= 2'd0;
+            dwait_rd        <= 1'b0;
         end else begin
+            // Default: deassert the one-cycle dump strobe
+            dump_pass_stb <= 1'b0;
+
             if (ram_load_boot) begin
                 boot_ram_want   <= 1'b0;
                 boot_ram_flying <= 1'b1;
@@ -746,12 +818,59 @@ module mem_ctrl (
             case (boot_state)
                 B_WAIT: begin
                     if (init_done)
-                        boot_state <= B_CLEAR;
+                        boot_state <= B_DPASS;
+                end
+
+                B_DPASS: begin
+                    // Marker first; B_DREQ/B_DWAIT then wait for dump_rdy
+                    // (low while dbg_uart shifts the "$P<n>" line out), so
+                    // no word can overtake its own pass header.
+                    if (dump_rdy) begin
+                        dump_pass_stb <= 1'b1;
+                        boot_state    <= B_DREQ;
+                    end
+                end
+
+                B_DREQ: begin
+                    if (!boot_ram_want && !boot_ram_flying) begin
+                        boot_ram_want  <= 1'b1;
+                        boot_ram_we    <= 1'b0;   // read
+                        boot_ram_addr  <= {3'd0, dump_idx, 1'b0};
+                        boot_ram_wdata <= 16'd0;
+                    end
+                    if (boot_ram_want || boot_ram_flying)
+                        boot_state <= B_DWAIT;
+                end
+
+                B_DWAIT: begin
+                    // boot_ram_done and dump_rd_data land together; give
+                    // dwait_rd one cycle to register before the strobe.
+                    if (boot_ram_done)
+                        dwait_rd <= 1'b1;
+                    if (dwait_rd && dump_rdy) begin
+                        // dump_stb is combinational on this very
+                        // condition, so the word is handed over in this
+                        // cycle: dump_word = dump_rd_data.
+                        dwait_rd <= 1'b0;
+                        if (dump_idx == 21'h1FFFFF) begin
+                            dump_idx <= 21'd0;
+                            if (dump_pass == DUMP_PASSES - 2'd1)
+                                boot_state <= B_CLEAR;
+                            else begin
+                                dump_pass  <= dump_pass + 2'd1;
+                                boot_state <= B_DPASS;
+                            end
+                        end else begin
+                            dump_idx  <= dump_idx + 21'd1;
+                            boot_state <= B_DREQ;
+                        end
+                    end
                 end
 
                 B_CLEAR: begin
                     if (!boot_ram_want && !boot_ram_flying) begin
                         boot_ram_want  <= 1'b1;
+                        boot_ram_we    <= 1'b1;   // write
                         boot_ram_addr  <= RAM_BASE + {7'd0, clr_idx, 1'b0};
                         boot_ram_wdata <= 16'd0;
                     end
@@ -778,6 +897,7 @@ module mem_ctrl (
                 B_RWRITE: begin
                     if (!boot_ram_want && !boot_ram_flying) begin
                         boot_ram_want  <= 1'b1;
+                        boot_ram_we    <= 1'b1;   // write
                         boot_ram_addr  <= RAM_BASE + {17'd0, boot_idx, 1'b0};
                         boot_ram_wdata <= flash_rdata; // held by flash_ctrl
                     end

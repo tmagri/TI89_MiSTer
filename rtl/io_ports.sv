@@ -135,7 +135,7 @@ module io_ports (
             5'h00: b1 = (io1[5'h00] & 8'h3B) | 8'h04; // battery good, 7:6 clear
             5'h06, 5'h07, 5'h08, 5'h09, 5'h0A, 5'h0B:
                    b1 = 8'h14;                        // unmapped
-            5'h0D: b1 = (io1[5'h0D] & 8'h80) | 8'h40; // link status
+            5'h0D: b1 = (io1[5'h0C][1]) ? 8'h50 : 8'h00; // link status (v12 compute_link_status: no cable -> STX empty only when TX-empty signalling enabled; never busy)
             5'h0F: b1 = 8'h00;                        // link rx (no cable)
             5'h10, 5'h11, 5'h12, 5'h13:
                    b1 = 8'h14;                        // write-only
@@ -160,7 +160,7 @@ module io_ports (
             5'h00: b1_lo = (io1[5'h00] & 8'h3B) | 8'h04;
             5'h06, 5'h07, 5'h08, 5'h09, 5'h0A, 5'h0B:
                    b1_lo = 8'h14;
-            5'h0D: b1_lo = (io1[5'h0D] & 8'h80) | 8'h40;
+            5'h0D: b1_lo = (io1[5'h0C][1]) ? 8'h50 : 8'h00; // link status (v12)
             5'h0F: b1_lo = 8'h00;
             5'h10, 5'h11, 5'h12, 5'h13:
                    b1_lo = 8'h14;

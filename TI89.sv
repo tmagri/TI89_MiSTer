@@ -503,6 +503,13 @@ module emu
 	wire        prot_arm; // $600001 bit 2: AI7 low-RAM write protection armed
 	wire        ai7_hit;  // CPU wrote below $000120 while prot_arm was set
 
+	// Pre-boot SDRAM image dump (mem_ctrl -> dbg_uart)
+	wire        dump_rdy;
+	wire        dump_stb;
+	wire [15:0] dump_word;
+	wire        dump_pass_stb;
+	wire        dump_active;
+
 	mem_ctrl mem_ctrl
 	(
 		.clk(clk_sys),
@@ -563,7 +570,13 @@ module emu
 		.io_lds_n(io_lds_n),
 		.protect(protect),
 		.prot_arm(prot_arm),
-		.ai7_hit(ai7_hit)
+		.ai7_hit(ai7_hit),
+
+		.dump_rdy(dump_rdy),
+		.dump_stb(dump_stb),
+		.dump_word(dump_word),
+		.dump_pass_stb(dump_pass_stb),
+		.dump_active(dump_active)
 	);
 
 	///////////////////////////////////////////////////////////////////////////
@@ -925,7 +938,7 @@ module emu
 		.dbg_lcd_on(lcd_on),
 		.dbg_protect(protect),
 	.dbg_stopped(stopped),
-	.dbg_ai7(dbg_ai7_latch),
+	.dbg_ai7(int_pend[7]),   // LIVE AI7 pending flag (not the sticky latch)
 	.boot_status(boot_status),
 
 	// Bus trace: raw CPU bus for the fault-triggered ring in dbg_uart
@@ -936,6 +949,12 @@ module emu
 	.tr_as_n(cpu_as_n),
 	.tr_ai7(ai7_hit),
 	.tr_boot_done(boot_done),
+
+	.dump_active(dump_active),
+	.dump_stb(dump_stb),
+	.dump_word(dump_word),
+	.dump_pass_stb(dump_pass_stb),
+	.dump_rdy(dump_rdy),
 
 	.txd(dbg_uart_txd)
 );

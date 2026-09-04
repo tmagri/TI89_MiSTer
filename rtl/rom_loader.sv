@@ -34,11 +34,15 @@
 // WIDE-mode byte order: hps_io presents the byte at the (even) address
 // on ioctl_dout[7:0] and the following byte on ioctl_dout[15:8].
 //
-// Payload writes are throttled at the hps_io level (ioctl_wait is wired
-// to the SDRAM controller's b_wait). The fill passes pace themselves at
-// one word every 8 clocks and additionally stall on sdram_wait so no
-// fill write is ever dropped (the SDRAM controller needs ~9 clocks per
-// write).
+// Payload writes are pushed into a 4-word skid buffer the moment each
+// word forms; a drain process retires them into the SDRAM port-B FIFO
+// whenever b_wait is low. (The SDRAM controller silently drops a b_wr
+// strobe that coincides with b_wait, so strobing directly from the
+// byte stream could — and did — lose a word whenever hps_io's
+// ioctl_wait backpressure lost the race.) The fill passes pace
+// themselves at one word every 8 clocks and additionally stall on
+// sdram_wait so no fill write is ever dropped (the SDRAM controller
+// needs ~9 clocks per write).
 //
 // rom_loaded only asserts if the marker was actually found, so a wrong
 // file never starts the CPU.
@@ -95,6 +99,19 @@ module rom_loader (
     localparam [2:0] S_DONE  = 3'd5;
 
     reg [2:0] state;
+
+    // =========================================================================
+    // Payload-write skid buffer (see header). Depth 4 + the controller's
+    // 8-deep FIFO outrun any hps_io burst; S_SCAN cannot leave for S_FLUSH
+    // until the skid is empty, so the later fill passes never collide with
+    // a pending payload write.
+    // =========================================================================
+
+    reg [20:0] sk_addr [0:3];
+    reg [15:0] sk_data [0:3];
+    reg [2:0]  sk_wp, sk_rp;
+    wire [2:0] sk_cnt   = sk_wp - sk_rp;
+    wire       sk_empty = (sk_cnt == 3'd0);
 
     // =========================================================================
     // Download start detection
@@ -229,8 +246,20 @@ module rom_loader (
             fill_start  <= 21'd0;
             found       <= 1'b0;
             fdiv        <= 3'd0;
+            sk_wp       <= 3'd0;
+            sk_rp       <= 3'd0;
         end else begin
             sdram_wr <= 1'b0;
+
+            // Retire payload words into the SDRAM port-B FIFO whenever it
+            // has room. The b_wr/b_wait race that silently dropped words
+            // is gone: a word leaves the skid only when b_wait is low.
+            if ((state == S_SCAN) && !sk_empty && !sdram_wait) begin
+                sdram_wr   <= 1'b1;
+                sdram_addr <= sk_addr[sk_rp[1:0]];
+                sdram_dout <= sk_data[sk_rp[1:0]];
+                sk_rp      <= sk_rp + 3'd1;
+            end
 
             if (dl_start) begin
                 // (Re)start: a new OS image download begins
@@ -322,9 +351,12 @@ module rom_loader (
                             waddr <= t_waddr;
 
                             if (t_wr) begin
-                                sdram_wr   <= 1'b1;
-                                sdram_addr <= t_addr;
-                                sdram_dout <= t_din;
+                                // Completed payload word -> skid buffer;
+                                // the drain process above writes it to the
+                                // SDRAM FIFO when b_wait allows.
+                                sk_addr[sk_wp[1:0]] <= t_addr;
+                                sk_data[sk_wp[1:0]] <= t_din;
+                                sk_wp               <= sk_wp + 3'd1;
                                 // Capture the boot-block words for the
                                 // 0x000 mirror
                                 if ((t_addr >= BOOT_FIRST) &&
@@ -333,9 +365,11 @@ module rom_loader (
                             end
                         end
 
-                        if (!ioctl_download) begin
-                            // Download finished: defer the dangling byte
-                            // flush to S_FLUSH so it respects sdram_wait.
+                        if (!ioctl_download && sk_empty) begin
+                            // Download finished AND every payload word has
+                            // been retired into the SDRAM FIFO: defer the
+                            // dangling byte flush to S_FLUSH so it respects
+                            // sdram_wait.
                             found       <= t_mf;
                             load_failed <= ~t_mf;
                             state       <= S_FLUSH;
