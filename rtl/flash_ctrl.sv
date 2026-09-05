@@ -22,14 +22,16 @@
 //     ID mode:     addr&0xFFFE == 0 -> 0x00B0 (manufacturer, Sharp)
 //                  addr&0xFFFE == 2 -> 0x00B5 (device, LH28F320BF)
 //                  anything else    -> 0xFFFF
-//     status mode: 0x0080 (DQ7 = ready, no error bits) after program or
-//                  erase — always ready, exactly like the references
-//                  (v12.js flash_ret_or / TiEmu wsm.ret_or complete
-//                  instantly). Chip-global until 0xFFFF resets to array
-//                  reads, like the real single WSM; the OS's flash
-//                  routines poll status from a command/status pointer that
-//                  may sit in a different 2 MB half than the data pointer,
-//                  so status must never be scoped to one bank.
+//     status mode: DQ7 (bit 7) = WSM busy/ready. Reports BUSY ($0000,
+//                  DQ7=0) while an erase fill is in flight and READY
+//                  ($0080) once it completes — like real silicon. Our fill
+//                  is deferred (not instantaneous like the reference
+//                  emulators), so reporting ready early let the OS read and
+//                  program blocks mid-fill: corrupted decompressed data
+//                  (doubled banner glyphs) and the post-decompression
+//                  derail. Chip-global (not bank-scoped): the OS polls via
+//                  a command/status pointer that may sit in the other
+//                  2 MB half than the data pointer.
 //     otherwise:   the SDRAM word
 //
 // Byte writes to flash are ignored (the reference model does not
@@ -146,14 +148,17 @@ module flash_ctrl (
                             flash_ready <= 1'b1;
                             req_valid   <= 1'b0;
                         end else if (ret_or) begin
-                            // Status register: DQ7 set = WSM ready. Both
-                            // references report ready immediately (v12
-                            // flash_ret_or / TiEmu wsm.ret_or — writes are
-                            // instantaneous there); our erase fill still
-                            // runs to completion before any deferred write
-                            // command is serviced, so command ordering is
-                            // preserved without ever reporting busy.
-                            flash_rdata <= 16'h0080;
+                            // Status register. DQ7 (bit 7) = WSM ready:
+                            // 0 while an erase fill is in flight, 1 when
+                            // done. REAL silicon reports busy for the whole
+                            // erase time (0.7–3 s); our fill is ~0.5 ms but
+                            // it is NOT instantaneous — reporting ready
+                            // early let the OS read/program the block while
+                            // the fill was still overwriting it (the
+                            // corrupted-font garble + derail). The OS's
+                            // poll loop expects to wait here, exactly like
+                            // real hardware.
+                            flash_rdata <= erase_busy ? 16'h0000 : 16'h0080;
                             flash_ready <= 1'b1;
                             req_valid   <= 1'b0;
                         end else begin

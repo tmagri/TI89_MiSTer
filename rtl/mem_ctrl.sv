@@ -662,22 +662,36 @@ module mem_ctrl (
                 S_ACCESS: begin
                     if (!req_rw && !req_boot && prot_arm &&
                         (req_addr < 24'h000120)) begin
-                        // AI7 "vector table write protection" (TiEmu
-                        // mem.c hw_put_long/word/byte): a CPU write below
-                        // $000120 while $600001 bit 2 is armed raises the
-                        // level-7 autovector AND THE WRITE IS *BLOCKED*
-                        // ("if((adr < 0x120) && io_bit_tst(0x01,2))
-                        //   hw_m68k_irq(7); else put_long_ptr(...)").
-                        // The OS uses this deliberately as a soft-reboot
-                        // trigger (it arms bit 2, points the NMI vector
-                        // at the boot entry $812188, then writes low RAM
-                        // on purpose — the write's VALUE must never land).
-                        // Performing the write corrupted OS state and
-                        // derailed the post-NMI reboot (2026-08-31 HW
-                        // traces, dbg_uart fault dumps #0-#3).
+                        // AI7 "vector table write protection": a CPU write
+                        // below $000120 while $600001 bit 2 is armed raises
+                        // the level-7 autovector. A/B EXPERIMENT (P3):
+                        // perform the write AND raise AI7. The OS's
+                        // soft-reboot choreography at $824184 writes its
+                        // reboot magic to $000002/$4/$6 through this exact
+                        // path; blocking the write (previous behavior)
+                        // leaves the NMI handler reading stale context and
+                        // the boot derails at the same FLW/INT marks on
+                        // every build. v12 and real hardware let the write
+                        // land.
                         ai7_hit     <= 1'b1;
                         cpu_dtack_n <= 1'b0;
-                        state       <= S_DONE;
+                        // fall through to the normal write path below by
+                        // NOT consuming req_valid: the write proceeds via
+                        // sel_ram/sel_flash handling in the same cycle.
+                        if (sel_ram && !req_boot) begin
+                            cpu_ram_want <= 1'b1;
+                            state        <= S_WAITRAM;
+                        end else if (sel_flash) begin
+                            flash_addr  <= req_addr[21:0];
+                            flash_wdata <= req_wdata;
+                            flash_uds_n <= req_uds_n;
+                            flash_lds_n <= req_lds_n;
+                            flash_wr    <= 1'b1;
+                            state       <= S_WAIT;
+                        end else begin
+                            cpu_dtack_n <= 1'b0;
+                            state       <= S_DONE;
+                        end
                     end else if (sel_ram && !req_boot) begin
                         // RAM — lives in SDRAM; queue the access and wait
                         // for the arbiter's completion pulse.

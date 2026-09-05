@@ -7,26 +7,29 @@ Updated 2026-09-05.
 ## ACTIVE: tactical debug plan (gospel-diff approach)
 
 Two open failures: (1) garbled banner rendering, (2) install never completes.
-Executing the approved 4-phase plan — **P0 ✅ P1 ✅ P2 ✅ (fork decided)**:
+Executing the approved 4-phase plan — **P0 ✅ P1 ✅ P2 ✅; P3 in flight
+(`gospel/reports/P3_plan.md`)**:
 
-- **P2 (`gospel/reports/P2_banner.md`):** UART RX command interface built and
-  deployed (build p2d: `D <F|R> <start> <len>` bounded dumps + `T` trace +
-  `C=xx` parser diag). **Garble = CPU-write-side, proven**: two consecutive
-  framebuffer dumps bit-identical (display + SDRAM read paths exonerated);
-  hw banner = correct text with every row shifted left 1 byte + 2 junk edge
-  columns. Executed code bytes verified exact. Flash window now diverges
-  from pre-boot gospel = the real-hardware **in-place flash decompression**
-  (gospel v12 does not model it — documented boundary). Deterministic
-  derail reproduced at FLW=$A1 / INT=$616; last flash-window cycles = the
-  AI7 boot-handler read loop at $81269C (correct bytes).
-- **P0 (`gospel/reports/P0_provenance.md`):** gospel proven three-way +
-  behavioral (banner, AI7, HOME in real Chrome).
-- **P1 (`gospel/reports/P1_gospel_states.md`):** S1/S2/S3 states; installer
-  net-flash signature = 79 words; banner-phase writes are $FF-over-$FF.
-- **Next (P3):** vectors + OS-var diffs (captures already in hw/), cert
-  block parse, then the first targeted µs simulation on the proven fb
-  write discrepancy (1-byte row shift) and the AI7 write-handling question
-  (our RTL blocks the write TiEmu-style; v12 lets it land and completes).
+- **P3 fix ledger:**
+  1. busy-during-fill (p3c): no change — derail identical. WSM status
+     semantics exonerated as the sole cause; WSM_CONTRACT.md corrected.
+  2. **AI7 write-lands A/B (p3d, CURRENT): REAL PROGRESS** — INT now climbs
+     freely ($5Bxx = 23K+ services, IPL=1) vs frozen $616 on all prior
+     builds. The OS runs much further before derailing into the $1414
+     sweep (PC $15xxxx region, D=$1414). The write-landing semantics are
+     confirmed BETTER (v12/real-HW behavior); keep permanently.
+- **Established:** garble = banner text double-stroked in the fb (corrupt
+  font/data reads during in-place decompression era); cert ALL $FF; the
+  derail = jump into unmapped $1xxxxx via a corrupted pointer/handler;
+  both builds deterministic. Byte-level discrepancies proven ⇒ targeted
+  µs simulation is now the justified next tool.
+- **Next (P3 completion):** the behavioral-memory sim runs 2.85G+ cycles
+  STABLE on the current RTL (no derail) while hardware derails ⇒ the
+  defect is real-SDRAM-chip timing under CPU/LCD burst load. Swap the TB's
+  behavioral sdmem for `sdram_chip.sv` (the §21/§22 real-chip methodology)
+  to reproduce the derail cycle-exactly in simulation, then fix.
+- **P0/P1/P2:** provenance PASS; S1/S2/S3 states; installer signature 79
+  words; UART RX dump interface deployed.
 
 
 ## RTL state (uncommitted working tree)

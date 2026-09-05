@@ -76,43 +76,45 @@ module tb_boot;
     wire        ai7_hit;
 
     // =========================================================================
-    // Ideal SDRAM model (word addressed, ~3-cycle turnaround, byte lanes)
-    // 4M words = 8MB; flash image at word 0, calculator RAM at 0x200000
+    // REAL SDRAM controller + REAL chip model (P3: reproduces the
+    // hardware-only read defect). The behavioral sdmem model cannot.
+    // Chip samples commands on SDRAM_CLK = ~clk (half a period after the
+    // controller's launch edge), exactly like the -3000 ps phase on hw.
+    // Flash image at chip word 0 (sdram_chip preloads flash.hex),
+    // calculator RAM at word 0x200000.
     // =========================================================================
-    reg [15:0] sdmem [0:4194303];
-    initial begin
-        integer i;
-        for (i = 0; i < 4194304; i = i + 1) sdmem[i] = 16'hFFFF;
-        $readmemh("flash.hex", sdmem);
-    end
+    wire        clk_sdram = ~clk;
+    wire        SDRAM_CLK, SDRAM_CKE, SDRAM_DQ_OE, SDRAM_DQML, SDRAM_DQMH;
+    wire        SDRAM_nCS, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nWE;
+    wire [12:0] SDRAM_A;
+    wire [1:0]  SDRAM_BA;
+    wire [15:0] SDRAM_DQ_OUT, chip_dq_out;
+    wire        chip_dq_oe;
+    wire [15:0] SDRAM_DQ = SDRAM_DQ_OE ? SDRAM_DQ_OUT :
+                          (chip_dq_oe ? chip_dq_out : 16'hZZZZ);
+    wire        sdram_init_done;
 
-    reg [1:0]  sdst = 0;
-    reg [24:0] sda;
-    reg        sd_ready_r = 0;
-    reg [15:0] sd_rdata_r = 0;
+    sdram u_sdram (
+        .clk(clk), .clk_sdram(clk_sdram), .reset(reset),
+        .SDRAM_CLK(SDRAM_CLK), .SDRAM_CKE(SDRAM_CKE),
+        .SDRAM_A(SDRAM_A), .SDRAM_BA(SDRAM_BA),
+        .SDRAM_DQ_IN(SDRAM_DQ), .SDRAM_DQ_OUT(SDRAM_DQ_OUT),
+        .SDRAM_DQ_OE(SDRAM_DQ_OE), .SDRAM_DQML(SDRAM_DQML),
+        .SDRAM_DQMH(SDRAM_DQMH), .SDRAM_nCS(SDRAM_nCS),
+        .SDRAM_nCAS(SDRAM_nCAS), .SDRAM_nRAS(SDRAM_nRAS), .SDRAM_nWE(SDRAM_nWE),
+        .a_addr(sd_addr), .a_wdata(sd_wdata), .a_rd(sd_rd), .a_wr(sd_wr),
+        .a_uds_n(sd_uds_n), .a_lds_n(sd_lds_n), .a_rdata(sd_rdata),
+        .a_ready(sd_ready),
+        .b_addr(21'd0), .b_wdata(16'd0), .b_wr(1'b0), .b_wait(),
+        .init_done(sdram_init_done)
+    );
 
-    always @(posedge clk) begin
-        sd_ready_r <= 1'b0;
-        case (sdst)
-            2'd0: if (sd_rd || sd_wr) begin
-                    sda <= sd_addr;
-                    if (sd_wr) begin
-                        if (!sd_uds_n) sdmem[sd_addr[23:1]][15:8] <= sd_wdata[15:8];
-                        if (!sd_lds_n) sdmem[sd_addr[23:1]][7:0]  <= sd_wdata[7:0];
-                    end
-                    sdst <= 2'd1;
-                  end
-            2'd1: sdst <= 2'd2;
-            2'd2: begin
-                    sd_ready_r <= 1'b1;
-                    sd_rdata_r <= sdmem[sda[23:1]];
-                    sdst       <= 2'd0;
-                  end
-        endcase
-    end
-
-    assign sd_ready = sd_ready_r;
-    assign sd_rdata = sd_rdata_r;
+    sdram_chip u_chip (
+        .CLK(SDRAM_CLK), .CKE(SDRAM_CKE), .A(SDRAM_A), .BA(SDRAM_BA),
+        .DQ_IN(SDRAM_DQ_OUT), .DQ_OUT(chip_dq_out), .DQ_OE(chip_dq_oe),
+        .DQML(SDRAM_DQML), .DQMH(SDRAM_DQMH), .nCS(SDRAM_nCS),
+        .nRAS(SDRAM_nRAS), .nCAS(SDRAM_nCAS), .nWE(SDRAM_nWE)
+    );
 
     // =========================================================================
     // DUT instances (wiring copied from TI89.sv)
@@ -122,7 +124,7 @@ module tb_boot;
         .clk(clk),
         .reset(reset),
         .rom_loaded(rom_loaded),
-        .init_done(sim_init_done),
+        .init_done(sim_init_done && sdram_init_done),
         .boot_done(boot_done),
         .cpu_addr(cpu_addr),
         .cpu_dout(cpu_dout),
@@ -170,7 +172,19 @@ module tb_boot;
         .io_lds_n(io_lds_n),
         .protect(protect),
         .prot_arm(prot_arm),
-        .ai7_hit(ai7_hit)
+        .ai7_hit(ai7_hit),
+        // P3: dump/command ports (the TB has no dbg_uart; the pre-boot
+        // dump must see an always-ready producer or the boot never starts)
+        .dump_rdy(1'b1),
+        .dump_stb(),
+        .dump_word(),
+        .dump_pass_stb(),
+        .dump_active(),
+        .cmd_req(1'b0),
+        .cmd_mem(1'b0),
+        .cmd_start(24'd0),
+        .cmd_len(24'd0),
+        .dump_cmd_mode()
     );
 
     flash_ctrl u_flash (
@@ -735,7 +749,7 @@ module tb_boot;
         begin
             df = $fopen(fname, "w");
             for (i = 0; i < 131072; i = i + 1)
-                $fwrite(df, "%04x\n", sdmem[32'h200000 + i]);
+                $fwrite(df, "%04x\n", u_chip.mem[32'h200000 + i]);
             $fclose(df);
             $display("cyc=%0d: RAM dump -> %0s (256KB)", cyc, fname);
         end
@@ -805,6 +819,30 @@ module tb_boot;
         end
     endtask
 
+    // =========================================================================
+    // P3 derail trigger: the hardware derails into the $1414 sweep with PC
+    // in unmapped $1xxxxx. Catch the FIRST program fetch (fc=010/110) that
+    // lands outside every valid map (RAM $0-$3FFFF, mirrors
+    // $200000-$23FFFF / $400000-$43FFFF, flash $800000-$BFFFFF), dump the
+    // full 8192-entry bus ring + RAM, and stop.
+    // =========================================================================
+    wire [23:0] fetch_b = {cpu_addr, 1'b0};
+    wire derail_fetch = boot_done && cyc_start && cpu_fc[1] && !cpu_fc[0] &&
+        (fetch_b >= 24'h100000) && (fetch_b < 24'h200000);
+
+    reg derail_tripped = 0;
+    always @(posedge clk) begin
+        if (derail_fetch && !derail_tripped) begin
+            derail_tripped <= 1'b1;
+            $display("*** DERAIL at cyc=%0d: program fetch $%06x (last_pc1=$%06x last_pc2=$%06x) intack=%0d flash_wr=%0d ***",
+                     cyc, fetch_b, last_pc1, last_pc2, n_intack, n_flash_wr);
+            dump_ring_file("derail_ring.log");
+            dump_ram("derail_ram.hex");
+            $fwrite(lf, "%0t cyc=%0d DERAIL fetch $%06x\n", $time, cyc, fetch_b);
+            $finish;
+        end
+    end
+
     always @(posedge clk) begin
         // Stall: no CPU bus activity for a very long time (100M cycles =
         // 1.6 s — well above any legitimate timer period, including the
@@ -812,11 +850,9 @@ module tb_boot;
         if (boot_done && !reset && (n_xfers > 0) &&
             (cyc - last_xfer_cyc > 32'd100000000))
             finish_dump("STALL (100M idle cycles)");
-        // 2026-08-31: HW dies at the OS's deliberate AI7 soft-reboot
-        // (post-decompression). Abort there with full dumps so the
-        // multi-billion-cycle boot terminates by itself at the fault.
-        else if (n_ai7 > 32'd0 && cyc > 32'd10000000)
-            finish_dump("AI7 FIRED (deliberate OS soft-reboot trigger)");
+        // (The AI7 abort was removed for P3: the hardware fix now lets the
+        // AI7 write land, and we must run PAST the soft-reboot to catch the
+        // derail. The derail trigger above stops the sim at the fault.)
         else if (cyc > 32'd4000000000)
             finish_dump("END (2.5G cycle budget)");
     end

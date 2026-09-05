@@ -217,6 +217,7 @@ module emu
 		"O[3:2],LCD Color,Green,Blue,Amber,B&W;",
 		"O[5:4],LCD Scale,4x,3x,2x,1x;",
 		"O6,Debug Overlay,On,Off;",
+		"O7,UART Status Line,On,Off;",
 		"-;",
 		"R0,Reset;",
 		"V,v1.0;"
@@ -945,6 +946,7 @@ module emu
 
 		.rxd(dbg_rx),
 		.boot_done(boot_done),
+		.status_mute(status[7]),
 		.cmd_req(dbg_cmd_req),
 		.cmd_mem(dbg_cmd_mem),
 		.cmd_start(dbg_cmd_start),

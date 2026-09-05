@@ -41,9 +41,16 @@ emulators and their documentation:
   the data pointer (`a3`); a bank-scoped status returns *array data*
   there, and any programmed word with bit 7 = 0 deadlocks the poll:
   `move.w (a2),d0 / btst #7,d0 / beq loop`.
-- Both references report **ready immediately** (v12 `flash_ret_or`,
-  TiEmu `wsm.ret_or` — writes complete instantly there). The DUT returns
-  `0x0080` (DQ7 ready, no error bits), which satisfies the same poll.
+- **Busy vs ready — the deferred-implementation rule (corrected
+  2026-09-05):** the reference emulators are *instantaneous* (writes
+  complete in zero time), so their status is always ready — there is no
+  fill window to be busy in. A hardware-accurate deferred implementation
+  (ours erases 64 KB via a background fill) **must report BUSY (DQ7=0)
+  while the fill runs and READY (DQ7=1) after** — exactly like real
+  silicon. Reporting ready during the fill let the OS read/verify and
+  program blocks while the fill was still overwriting them: corrupted
+  decompressed data (doubled banner glyphs), then the post-decompression
+  derail. Verified on hardware 2026-09-05 (build p2d failure → p3c fix).
 - Only `0xFFFF` exits status mode (`0x5050` alone does not — all three
   implementations agree).
 

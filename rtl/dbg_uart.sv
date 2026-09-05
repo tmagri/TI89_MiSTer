@@ -28,6 +28,7 @@ module dbg_uart (
     input             dbg_stopped,
     input             dbg_ai7,
     input       [2:0] boot_status,
+    input             status_mute,  // OSD: suppress periodic status lines
 
     // ---- SDRAM image dump (pre-boot read-back verify from mem_ctrl) ----
     // Streams "$P<n>\r\n" per pass, "@<6-hex word addr>\r\n" every 4096
@@ -87,7 +88,7 @@ module dbg_uart (
     //   15: CR, 16: LF
     localparam [5:0]  TR_LEN        = 6'd16;
     // Dump = 1 header + 32 bus-ring lines + 64 flash-watch lines
-    localparam [6:0]  TR_LINES      = 7'd97;
+    localparam [7:0]  TR_LINES      = 8'd129;  // 1 F + 32 E + 64 L + 32 M
 
     localparam [1:0] S_IDLE = 2'd0;
     localparam [1:0] S_LOAD = 2'd1;
@@ -106,7 +107,7 @@ module dbg_uart (
     // ring entry (0 = most recent completed cycle).
     reg        tr_active;
     reg        tr_sent;
-    reg  [6:0] tr_line;
+    reg  [7:0] tr_line;
     reg  [3:0] fault_count;
     reg        tr_dump_done; // 1-clk pulse: dump finished -> ring block re-arms
     reg        tr_pend;      // sticky: host 'T' command requests a trace dump
@@ -184,6 +185,17 @@ module dbg_uart (
     reg [15:0] snap_fl_data [0:63];
     reg        snap_fl_rw   [0:63];
 
+    // Framebuffer WRITE watch ring: every COMPLETED CPU write whose address
+    // lands in the framebuffer region ($4C00-$57FF). P3 evidence: debug
+    // status text was found written into this region — this ring names the
+    // writer (address/data/FC fingerprint of each offending write).
+    reg [23:0] fbw_addr [0:31];
+    reg [15:0] fbw_data [0:31];
+    reg  [2:0] fbw_fc   [0:31];
+    reg [23:0] snap_fbw_addr [0:31];
+    reg [15:0] snap_fbw_data [0:31];
+    reg  [2:0] snap_fbw_fc   [0:31];
+
     reg        fault_latched;
     reg        record_stop;   // one clk after fault_latched: stops recording
     reg        prev_as;
@@ -214,6 +226,11 @@ module dbg_uart (
                 flr_addr[k] <= 22'd0;
                 flr_data[k] <= 16'd0;
                 flr_rw[k]   <= 1'b1;
+            end
+            for (k = 0; k < 32; k = k + 1) begin
+                fbw_addr[k] <= 24'd0;
+                fbw_data[k] <= 16'd0;
+                fbw_fc[k]   <= 3'd0;
             end
         end else begin
             prev_as <= tr_as_n;
@@ -274,6 +291,17 @@ module dbg_uart (
                     flr_addr[0] <= tr_addr[21:0];
                     flr_data[0] <= tr_data;
                     flr_rw[0]   <= tr_rw;
+                end
+                // Framebuffer WRITE watch ($4C00-$57FF)
+                if (!tr_rw && (tr_addr >= 24'h004C00) && (tr_addr <= 24'h0057FF)) begin
+                    for (k = 31; k > 0; k = k - 1) begin
+                        fbw_addr[k] <= fbw_addr[k-1];
+                        fbw_data[k] <= fbw_data[k-1];
+                        fbw_fc[k]   <= fbw_fc[k-1];
+                    end
+                    fbw_addr[0] <= tr_addr;
+                    fbw_data[0] <= tr_data;
+                    fbw_fc[0]   <= tr_fc;
                 end
             end
         end
@@ -495,26 +523,32 @@ module dbg_uart (
     // completed CPU bus cycle in the flash window $800000-$BFFFFF).
     wire [4:0] tr_ent = tr_line[4:0] - 5'd1;   // E entry 0..31 (mod-32 wrap)
     wire [5:0] fl_ent = tr_line[5:0] - 6'd33;  // L entry 0..63 (mod-64 wrap)
+    wire [4:0] fb_ent = tr_line[4:0] - 5'd1;   // M entry 0..31 (mod-32 wrap)
     reg [23:0] ent_addr;
     reg [15:0] ent_data;
     reg        ent_rw;
     reg  [2:0] ent_fc;
     always @(*) begin
-        if (tr_line == 7'd0) begin
+        if (tr_line == 8'd0) begin
             ent_addr = f_addr;
             ent_data = f_data;
             ent_rw   = f_rw;
             ent_fc   = f_fc;
-        end else if (tr_line <= 7'd32) begin
+        end else if (tr_line <= 8'd32) begin
             ent_addr = snap_addr_t[tr_ent];
             ent_data = snap_data_t[tr_ent];
             ent_rw   = snap_rw_t[tr_ent];
             ent_fc   = snap_fc_t[tr_ent];
-        end else begin
+        end else if (tr_line <= 8'd96) begin
             ent_addr = {2'b00, snap_fl_addr[fl_ent]};
             ent_data = snap_fl_data[fl_ent];
             ent_rw   = snap_fl_rw[fl_ent];
             ent_fc   = 3'd5;
+        end else begin
+            ent_addr = snap_fbw_addr[fb_ent];
+            ent_data = snap_fbw_data[fb_ent];
+            ent_rw   = 1'b0;
+            ent_fc   = snap_fbw_fc[fb_ent];
         end
     end
 
@@ -655,18 +689,23 @@ module dbg_uart (
     always @(*) begin
         if (tr_active) begin
             case (char_idx[5:0])
-                6'd0:    tx_byte = (tr_line == 7'd0) ? "F" :
-                                    (tr_line <= 7'd32) ? "E" : "L";
-                6'd1:    tx_byte = (tr_line == 7'd0) ?
+                6'd0:    tx_byte = (tr_line == 8'd0) ? "F" :
+                                    (tr_line <= 8'd32) ? "E" :
+                                    (tr_line <= 8'd96) ? "L" : "M";
+                6'd1:    tx_byte = (tr_line == 8'd0) ?
                              hex2ascii(fault_count[3:0]) :
-                             (tr_line <= 7'd32) ?
+                             (tr_line <= 8'd32) ?
                                  hex2ascii({3'b0, tr_ent[4]}) :
-                                 hex2ascii({2'b0, fl_ent[5]});
-                6'd2:    tx_byte = (tr_line == 7'd0) ?
+                                 (tr_line <= 8'd96) ?
+                                     hex2ascii({2'b0, fl_ent[5]}) :
+                                     hex2ascii({3'b0, fb_ent[4]});
+                6'd2:    tx_byte = (tr_line == 8'd0) ?
                              (f_ai7 ? "a" : "f") :
-                             (tr_line <= 7'd32) ?
+                             (tr_line <= 8'd32) ?
                                  hex2ascii(tr_ent[3:0]) :
-                                 hex2ascii(fl_ent[4:0]);
+                                 (tr_line <= 8'd96) ?
+                                     hex2ascii(fl_ent[4:0]) :
+                                     hex2ascii(fb_ent[3:0]);
                 6'd3:    tx_byte = hex2ascii(ent_addr[23:20]);
                 6'd4:    tx_byte = hex2ascii(ent_addr[19:16]);
                 6'd5:    tx_byte = hex2ascii(ent_addr[15:12]);
@@ -678,7 +717,7 @@ module dbg_uart (
                 6'd11:   tx_byte = hex2ascii(ent_data[7:4]);
                 6'd12:   tx_byte = hex2ascii(ent_data[3:0]);
                 6'd13:   tx_byte = ent_rw ? "R" : "W";
-                6'd14:   tx_byte = (tr_line > 7'd32) ? "F" :
+                6'd14:   tx_byte = (tr_line > 8'd32) ? "F" :
                                     hex2ascii({1'b0, ent_fc[2:0]});
                 6'd15:   tx_byte = 8'h0D;
                 default: tx_byte = 8'h0A;
@@ -791,7 +830,7 @@ module dbg_uart (
             tr_pend          <= 1'b0;
             tr_forced        <= 1'b0;
             tr_dump_done     <= 1'b0;
-            tr_line          <= 7'd0;
+            tr_line          <= 8'd0;
             snap_pc          <= 24'd0;
             snap_addr        <= 24'd0;
             snap_data        <= 16'd0;
@@ -833,6 +872,11 @@ module dbg_uart (
                             snap_fl_data[k] <= flr_data[k];
                             snap_fl_rw[k]   <= flr_rw[k];
                         end
+                        for (k = 0; k < 32; k = k + 1) begin
+                            snap_fbw_addr[k] <= fbw_addr[k];
+                            snap_fbw_data[k] <= fbw_data[k];
+                            snap_fbw_fc[k]   <= fbw_fc[k];
+                        end
                         tr_forced <= tr_pend && !(fault_latched && !tr_sent);
                         tr_pend   <= 1'b0;
                         // NB: tr_sent is NOT touched here. Clearing it would
@@ -840,7 +884,7 @@ module dbg_uart (
                         // re-latch fault_latched instantly) restart the
                         // trace flood forever and starve the du engine.
                         tr_active <= 1'b1;
-                        tr_line   <= 7'd0;   // line 0 = header
+                        tr_line   <= 8'd0;   // line 0 = header
                         char_idx  <= 7'd0;
                         state     <= S_LOAD;
                     end else if (du_state != DU_IDLE) begin
@@ -849,7 +893,8 @@ module dbg_uart (
                         // is held in reset during the dump.)
                         du_send <= 1'b1;
                         state   <= S_LOAD;
-                    end else if (!dump_active && period_cnt >= REPEAT_PERIOD) begin
+                    end else if (!dump_active && !status_mute &&
+                                 period_cnt >= REPEAT_PERIOD) begin
                         period_cnt       <= 24'd0;
                         tr_active        <= 1'b0;
                         snap_pc          <= dbg_pc;
@@ -911,7 +956,7 @@ module dbg_uart (
                                         tr_dump_done  <= 1'b1;   // ring block re-arms
                                         state         <= S_IDLE;
                                     end else begin
-                                        tr_line   <= tr_line + 7'd1;
+                                        tr_line   <= tr_line + 8'd1;
                                         char_idx  <= 7'd0;
                                         state     <= S_LOAD;
                                     end

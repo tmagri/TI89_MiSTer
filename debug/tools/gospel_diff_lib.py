@@ -11,6 +11,8 @@ signatures(diffs)           -> detect byte-swap / 1-2 byte address-shift
                                or shift is diagnosed mechanically)
 """
 
+import re
+
 FLASH_WORDS = 2 * 1024 * 1024  # 4 MB / 2
 
 
@@ -45,16 +47,21 @@ def parse_run8(path):
 
 
 def parse_dump_stream(data, expect_bytes=None):
-    """Parse a "$D\\r\\n" command-dump response: the 4-byte marker line, then
-    blocks of one 9-byte "@xxxxxx\\r\\n" sync + up to 8192 raw bytes (same
-    block framing as the $P stream, block-aligned to the command stream).
-    Structural walk: each block is 8192 bytes unless it is the last (capture
-    ends at the payload end). Leading junk (interleaved status characters)
-    is skipped by the find()."""
-    i = data.find(b"$D")
-    if i < 0:
-        raise ValueError("no $D marker in stream")
-    i += 4                                    # "$D\r\n"
+    """Parse a command-dump response: a marker line ("$D\\r\\n" for RAM dumps,
+    "$P<n>\\r\\n" for flash-mode dumps — mem_ctrl drives the marker type),
+    then blocks of one 9-byte "@xxxxxx\\r\\n" sync + up to 8192 raw bytes.
+    Structural walk anchored on the LAST marker before the first sync;
+    leading junk (interleaved status characters) is skipped."""
+    first_sync = None
+    for m in re.finditer(rb"@[0-9A-F]{6}\r\n", data):
+        first_sync = m.start()
+        break
+    if first_sync is None:
+        raise ValueError("no @sync in stream")
+    mi = data.rfind(b"$", 0, first_sync)
+    if mi < 0 or data[mi + 1:mi + 2] not in (b"D", b"P"):
+        raise ValueError("no marker line before first sync")
+    i = first_sync
     out = bytearray()
     first = True
     while True:
