@@ -147,7 +147,18 @@ module mem_ctrl (
     output            dump_stb,     // combinational: valid exactly when dump_rdy
     output     [15:0] dump_word,
     output reg        dump_pass_stb,
-    output            dump_active
+    output            dump_active,
+
+    // ---- Host command dumps (post-boot, bounded; from dbg_uart RX) ----
+    // Streams an arbitrary bounded range to dbg_uart with the same
+    // framing (marker "$D" via dump_cmd_mode). cmd_req is only honored
+    // in B_DONE (CPU released, no boot dump in flight) and re-latches
+    // start/len from the (already validated/clamped) command inputs.
+    input             cmd_req,
+    input             cmd_mem,      // 0 = flash image, 1 = calculator RAM
+    input      [23:0] cmd_start,    // byte offset (even)
+    input      [23:0] cmd_len,      // byte length (even, nonzero)
+    output reg        dump_cmd_mode
 );
 
     // =========================================================================
@@ -442,6 +453,10 @@ module mem_ctrl (
     localparam [3:0] B_DPASS  = 4'd6; // dump: emit pass marker
     localparam [3:0] B_DREQ   = 4'd7; // dump: launch SDRAM read
     localparam [3:0] B_DWAIT  = 4'd8; // dump: read done -> UART, advance
+    localparam [3:0] B_CPASS  = 4'd9; // command dump: emit "$D" marker
+    localparam [3:0] B_CREQ   = 4'd10;// command dump: launch SDRAM read
+    localparam [3:0] B_CWAITW = 4'd11;// command dump: read done -> UART
+    localparam [3:0] B_CEND   = 4'd12;// command dump: complete
 
     // Number of full-image read-back passes before the boot proceeds
     // (1: the 4MB image was verified bit-exact on hardware 2026-09-01;
@@ -452,15 +467,24 @@ module mem_ctrl (
     reg [16:0] clr_idx;    // RAM clear index  (0..131071)
     reg [6:0]  boot_idx;   // Header word index (0..127)
 
+    // Command dump (host 'D' command): range + progress
+    reg        cmd_mem_r;      // 0 = flash image, 1 = calc RAM
+    reg [23:0] cmd_start_r;    // first byte offset (even)
+    reg [23:0] cmd_left_r;     // bytes remaining (even)
+    reg [22:0] cmd_total_w;    // total words in the command range
+    wire [22:0] cmd_cur_w = cmd_total_w - cmd_left_r[22:1]; // current word index
+
     assign dump_active = (boot_state == B_DPASS) || (boot_state == B_DREQ) ||
-                         (boot_state == B_DWAIT);
+                         (boot_state == B_DWAIT) || (boot_state == B_CPASS) ||
+                         (boot_state == B_CREQ) || (boot_state == B_CWAITW);
 
     // Combinational strobe: asserted in the SAME cycle dump_rdy is high,
     // so dbg_uart's (dump_stb && du_state == DU_IDLE) acceptance can never
     // miss. (The previous registered version pulsed one cycle later and
     // lost words whenever the producer left IDLE in that gap — visible as
     // the missing word 0 of dump passes 1/2 on 2026-09-01.)
-    assign dump_stb   = (boot_state == B_DWAIT) && dwait_rd && dump_rdy;
+    assign dump_stb   = ((boot_state == B_DWAIT) || (boot_state == B_CWAITW))
+                        && dwait_rd && dump_rdy;
 
     // Boot FSM handshake: one flash-window read per header word
     wire boot_req = (boot_state == B_COPY);
@@ -804,6 +828,11 @@ module mem_ctrl (
             dump_idx        <= 21'd0;
             dump_pass       <= 2'd0;
             dwait_rd        <= 1'b0;
+            cmd_mem_r       <= 1'b0;
+            cmd_start_r     <= 24'd0;
+            cmd_left_r      <= 24'd0;
+            cmd_total_w     <= 23'd0;
+            dump_cmd_mode   <= 1'b0;
         end else begin
             // Default: deassert the one-cycle dump strobe
             dump_pass_stb <= 1'b0;
@@ -913,6 +942,70 @@ module mem_ctrl (
 
                 B_DONE: begin
                     boot_done <= 1'b1;
+                    // Host command dump: only accepted here (CPU released,
+                    // no boot dump in flight). cmd_req arrives already
+                    // validated/clamped by dbg_uart's parser.
+                    if (cmd_req) begin
+                        cmd_mem_r      <= cmd_mem;
+                        cmd_start_r    <= cmd_start;
+                        cmd_left_r     <= cmd_len;
+                        cmd_total_w    <= cmd_len[23:1];
+                        dump_cmd_mode  <= cmd_mem;
+                        boot_state     <= B_CPASS;
+                    end
+                end
+
+                // -----------------------------------------------------
+                // Command dump (marker "$D"): same word/stream handshake
+                // as the pre-boot dump, but over an arbitrary bounded
+                // range and with the CPU running (dump reads take the
+                // lowest-priority RAM slot; flash-image reads are plain
+                // SDRAM reads of the 4 MB image area).
+                B_CPASS: begin
+                    if (dump_rdy) begin
+                        dump_pass_stb <= 1'b1;
+                        boot_state    <= B_CREQ;
+                    end
+                end
+
+                B_CREQ: begin
+                    if (!boot_ram_want && !boot_ram_flying) begin
+                        boot_ram_want  <= 1'b1;
+                        boot_ram_we    <= 1'b0;    // read
+                        // lowest-priority RAM slot; CPU keeps running.
+                        // dbg_uart clamps start+len to the region, so both
+                        // sums below stay within their field widths.
+                        if (cmd_mem_r)
+                            boot_ram_addr <= RAM_BASE +
+                                {7'd0, (cmd_start_r[17:1] + cmd_cur_w[16:0]), 1'b0};
+                        else
+                            boot_ram_addr <= {3'd0,
+                                (cmd_start_r[21:1] + cmd_cur_w[20:0]), 1'b0};
+                        boot_ram_wdata <= 16'd0;
+                    end
+                    if (boot_ram_want || boot_ram_flying)
+                        boot_state <= B_CWAITW;
+                end
+
+                B_CWAITW: begin
+                    // mirrors B_DWAIT: dwait_rd gives the grant FSM one cycle
+                    // to latch dump_rd_data, then the combinational dump_stb
+                    // hands the word over exactly when dbg_uart is idle.
+                    if (boot_ram_done)
+                        dwait_rd <= 1'b1;
+                    if (dwait_rd && dump_rdy) begin
+                        dwait_rd <= 1'b0;
+                        if (cmd_left_r == 24'd2) begin
+                            boot_state <= B_CEND;
+                        end else begin
+                            cmd_left_r <= cmd_left_r - 24'd2;
+                            boot_state <= B_CREQ;
+                        end
+                    end
+                end
+
+                B_CEND: begin
+                    boot_state <= B_DONE;
                 end
 
                 default: boot_state <= B_WAIT;

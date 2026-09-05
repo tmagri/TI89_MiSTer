@@ -34,11 +34,28 @@ module dbg_uart (
     // words, then two raw big-endian bytes per word. dump_rdy is high
     // whenever the producer is idle; mem_ctrl pulses dump_stb/dump_word
     // only then. dump_active suppresses the periodic status lines.
+    // Command dumps (host-initiated, post-boot) reuse the same framing but
+    // emit "$D\r\n" as the marker line (dump_cmd_mode set by mem_ctrl).
     input             dump_active,
     input             dump_stb,
     input      [15:0] dump_word,
     input             dump_pass_stb,
+    input             dump_cmd_mode,   // pass marker is "$D" not "$P<n>"
     output            dump_rdy,
+
+    // ---- Host command interface (UART RX, bounded by construction) ----
+    //   D <F|R> <6-hex start> <6-hex len>   bounded memory dump
+    //     F: flash window (chip byte offset in the 4 MB SDRAM image)
+    //     R: calculator RAM (byte offset in the 256 KB calc RAM)
+    //     len is clamped to 2 MB and rounded down to even.
+    //   T                                    emit trace rings now
+    input             rxd,
+    input             boot_done,
+    output reg        cmd_req,          // 1-clk pulse into mem_ctrl
+    output reg        cmd_mem,          // 0 = flash image, 1 = calc RAM
+    output reg [23:0] cmd_start,        // byte offset
+    output reg [23:0] cmd_len,          // byte length (even, clamped)
+    output reg        trace_req,        // 1-clk pulse: emit trace rings
 
     // ---- CPU bus trace (fault diagnosis) ----
     // Records the last 16 completed bus cycles in a shift ring and
@@ -62,7 +79,7 @@ module dbg_uart (
     // 115200 baud @ 60 MHz: 60,000,000 / 115200 = 521 clocks/bit
     localparam [9:0]  BIT_PERIOD    = 10'd520;
     localparam [23:0] REPEAT_PERIOD = 24'd15_000_000; // ~250 ms (4 lines/sec)
-    localparam [6:0]  MSG_LEN       = 7'd82;
+    localparam [6:0]  MSG_LEN       = 7'd87;   // incl. " C=xy" parser diag
     // Trace line layout (17 chars, indices 0..16):
     //   0    : line kind — F fault header, E bus-ring entry, L flash-watch
     //   1..2 : fault# (F) / ring entry (E: 00=most recent) / fl entry (L)
@@ -92,6 +109,8 @@ module dbg_uart (
     reg  [6:0] tr_line;
     reg  [3:0] fault_count;
     reg        tr_dump_done; // 1-clk pulse: dump finished -> ring block re-arms
+    reg        tr_pend;      // sticky: host 'T' command requests a trace dump
+    reg        tr_forced;    // current trace dump was host-forced (T command)
 
     // Faulting-cycle latch: WHAT tripped the dump and the bus cycle that
     // did it (the ring below only holds cycles that COMPLETED before the
@@ -115,6 +134,7 @@ module dbg_uart (
     reg        snap_stopped;
     reg        snap_ai7;
     reg  [2:0] snap_boot_status;
+    reg  [7:0] snap_cpdiag;   // parser end-state at last CR ("C=" field)
 
     function [7:0] hex2ascii;
         input [3:0] nib;
@@ -261,6 +281,214 @@ module dbg_uart (
 
     reg [7:0] tx_byte;
 
+    // =========================================================================
+    // UART RX — 8N1 sampler + host command parser
+    // =========================================================================
+    // Commands (ASCII, CR or LF terminated, case-insensitive):
+    //   D <F|R> <6-hex start> <6-hex len>
+    //   T
+    // Issued only when the mem_ctrl boot/dump FSM is idle (B_DONE) and the
+    // CPU is released (boot_done); mem_ctrl re-checks on its side.
+
+    reg rx_ff0, rx_ff1;
+    always @(posedge clk) begin
+        if (reset) begin
+            rx_ff0 <= 1'b1;
+            rx_ff1 <= 1'b1;
+        end else begin
+            rx_ff0 <= rxd;
+            rx_ff1 <= rx_ff0;
+        end
+    end
+
+    localparam [1:0] RX_IDLE  = 2'd0;
+    localparam [1:0] RX_START = 2'd1;
+    localparam [1:0] RX_DATA  = 2'd2;
+    localparam [1:0] RX_STOP  = 2'd3;
+
+    reg [1:0]  rx_state;
+    reg [9:0]  rx_baud;
+    reg [3:0]  rx_bits;
+    reg [7:0]  rx_shift;
+    reg        rx_we;      // 1-clk: rx_d valid
+    reg [7:0]  rx_d;
+
+    always @(posedge clk) begin
+        if (reset) begin
+            rx_state <= RX_IDLE;
+            rx_baud  <= 10'd0;
+            rx_bits  <= 4'd0;
+            rx_shift <= 8'hFF;
+            rx_we    <= 1'b0;
+            rx_d     <= 8'h00;
+        end else begin
+            rx_we <= 1'b0;
+            case (rx_state)
+                RX_IDLE:
+                    if (!rx_ff1) begin
+                        rx_state <= RX_START;
+                        rx_baud  <= 10'd0;
+                    end
+                RX_START: begin
+                    rx_baud <= rx_baud + 10'd1;
+                    if (rx_baud == BIT_PERIOD[9:1]) begin
+                        // mid start bit: verify still low, center the rest
+                        rx_baud  <= 10'd0;
+                        rx_bits  <= 4'd0;
+                        rx_state <= rx_ff1 ? RX_IDLE : RX_DATA;
+                    end
+                end
+                RX_DATA: begin
+                    rx_baud <= rx_baud + 10'd1;
+                    if (rx_baud == BIT_PERIOD) begin
+                        rx_baud  <= 10'd0;
+                        rx_shift <= {rx_ff1, rx_shift[7:1]};
+                        rx_bits  <= rx_bits + 4'd1;
+                        if (rx_bits == 4'd7)
+                            rx_state <= RX_STOP;
+                    end
+                end
+                RX_STOP: begin
+                    rx_baud <= rx_baud + 10'd1;
+                    if (rx_baud == BIT_PERIOD) begin
+                        rx_d     <= rx_shift;
+                        rx_we    <= 1'b1;
+                        rx_state <= RX_IDLE;
+                    end
+                end
+                default: rx_state <= RX_IDLE;
+            endcase
+        end
+    end
+
+    // ---- streaming command parser ----
+    // Fixed-width fields keep the FSM tiny: idx 0 = 'D'/'T', 1 = ' ', 2 =
+    // 'F'/'R', 3 = ' ', 4..9 = start hex, 10 = ' ', 11..16 = len hex, 17 = CR/LF.
+    localparam [23:0] CMD_LEN_MAX = 24'h200000;   // 2 MB hard cap
+    // Command parser state: which field we are in + accumulated values.
+    // Variable-width hex (a superset of the fixed-width format): fields end
+    // at ' ' / CR, so the host may send "D F 4C00 1000" or "D F 004C00 001000".
+    localparam [2:0] CP_CMD = 3'd0;   // expecting 'D' or 'T'
+    localparam [2:0] CP_SP1 = 3'd1;   // space after cmd
+    localparam [2:0] CP_MEM = 3'd2;   // 'F' or 'R'
+    localparam [2:0] CP_SP2 = 3'd3;   // space after F/R
+    localparam [2:0] CP_A   = 3'd4;   // start hex digits
+    localparam [2:0] CP_L   = 3'd6;   // length hex digits
+    reg  [2:0]  cp_st;
+    reg  [23:0] cp_start;
+    reg  [23:0] cp_len;
+    reg         cp_mem;     // 'R' seen
+    reg         cp_bad;     // malformed line: swallow until CR/LF
+    reg  [7:0]  cp_diag;    // parser end-state at last CR (status "C=" field)
+
+    wire [7:0] rx_lc = rx_d | 8'h20;              // lowercase for letters
+    wire       rx_hex_ok = ((rx_d >= "0") && (rx_d <= "9")) ||
+                           ((rx_lc >= "a") && (rx_lc <= "f"));
+    wire [3:0] rx_nib = (rx_d >= "0" && rx_d <= "9") ? rx_d[3:0]
+                                                     : rx_lc[3:0] + 4'd9;
+
+    task cp_issue;
+        reg [23:0] n;
+        reg [23:0] limit;
+        begin
+            limit = cp_mem ? 24'h040000 : 24'h400000;   // RAM 256K / flash 4M
+            n = cp_len;
+            if (n > CMD_LEN_MAX)
+                n = CMD_LEN_MAX;
+            if (n > limit - cp_start)                    // clamp to region end
+                n = limit - cp_start;
+            if (n[0])
+                n = {n[23:1], 1'b0};              // even byte count
+            cmd_mem    <= cp_mem;
+            cmd_start  <= cp_start;
+            cmd_len    <= n;
+            // pulse suppressed (mem_ctrl would ignore it anyway; the host
+            // simply gets no "$D" response) when out of range/zero length/
+            // boot not done/a boot dump is in flight.
+            cmd_req    <= !dump_active && boot_done &&
+                          (n != 24'd0) && (cp_start < limit);
+        end
+    endtask
+
+    always @(posedge clk) begin
+        if (reset) begin
+            cp_st     <= CP_CMD;
+            cp_start  <= 24'd0;
+            cp_len    <= 24'd0;
+            cp_mem    <= 1'b0;
+            cp_bad    <= 1'b0;
+            cp_diag   <= 8'h00;
+            cmd_req   <= 1'b0;
+            cmd_mem   <= 1'b0;
+            cmd_start <= 24'd0;
+            cmd_len   <= 24'd0;
+            trace_req <= 1'b0;
+        end else begin
+            cmd_req   <= 1'b0;
+            trace_req <= 1'b0;
+            if (rx_we) begin
+                if (rx_d == 8'h0D || rx_d == 8'h0A) begin
+                    // Line end: "T" (CP_SP1 with cmd 't') -> trace;
+                    // complete "D ..." (CP_L, not bad) -> issue.
+                    cp_diag <= {cp_bad, 1'b0, cp_st};
+                    if (!cp_bad && cp_st == CP_L)
+                        cp_issue;
+                    else if (!cp_bad && cp_st == CP_SP1)
+                        trace_req <= 1'b1;      // "T" (latched by TX FSM)
+                    cp_st   <= CP_CMD;
+                    cp_bad  <= 1'b0;
+                end else if (!cp_bad) begin
+                    case (cp_st)
+                        CP_CMD: begin
+                            if (rx_lc == "d" || rx_lc == "t")
+                                cp_st <= CP_SP1;
+                            else
+                                cp_bad <= 1'b1;
+                        end
+                        CP_SP1: begin
+                            if (rx_d == " ")
+                                cp_st <= CP_MEM;
+                            else
+                                cp_bad <= 1'b1;
+                        end
+                        CP_MEM: begin
+                            if (rx_lc == "f") begin
+                                cp_mem <= 1'b0;
+                                cp_st  <= CP_SP2;
+                            end else if (rx_lc == "r") begin
+                                cp_mem <= 1'b1;
+                                cp_st  <= CP_SP2;
+                            end else
+                                cp_bad <= 1'b1;
+                        end
+                        CP_SP2: begin
+                            if (rx_d == " ")
+                                cp_st <= CP_A;
+                            else
+                                cp_bad <= 1'b1;
+                        end
+                        CP_A: begin
+                            if (rx_hex_ok)
+                                cp_start <= {cp_start[19:0], rx_nib};
+                            else if (rx_d == " ")
+                                cp_st <= CP_L;   // start field done
+                            else
+                                cp_bad <= 1'b1;
+                        end
+                        CP_L: begin
+                            if (rx_hex_ok)
+                                cp_len <= {cp_len[19:0], rx_nib};
+                            else
+                                cp_bad <= 1'b1;
+                        end
+                        default: cp_bad <= 1'b1;
+                    endcase
+                end
+            end
+        end
+    end
+
+
     // Trace dump line mux. tr_line 0 = header (faulting cycle + trigger),
     // tr_line 1..32 = bus-ring entries 0..31 (0 = most recent completed),
     // tr_line 33..96 = flash-watch entries 0..63 (0 = most recent
@@ -312,7 +540,8 @@ module dbg_uart (
     reg  [20:0] du_saddr;      // word index of the current 4096-word block
     reg  [1:0]  du_markn;      // pass number to print next
     reg  [1:0]  du_passcnt;    // pass markers seen so far
-    reg         du_pass_pend;  // "$P<n>" line queued
+    reg         du_pass_pend;  // "$P<n>"/"$D" line queued
+    reg         du_cmd;        // current pass marker is "$D" (host command)
     reg         du_load_pulse; // 1-clk: TX engine consumed du_byte
                                // (driven solely by the TX engine below)
     reg         du_send;       // TX engine is shifting a dump byte
@@ -325,10 +554,11 @@ module dbg_uart (
             DU_PASS: begin
                 case (du_pos)
                     4'd0:    du_byte = "$";
-                    4'd1:    du_byte = "P";
-                    4'd2:    du_byte = hex2ascii({2'b00, du_markn});
-                    4'd3:    du_byte = 8'h0D;
-                    default: du_byte = 8'h0A;
+                    4'd1:    du_byte = du_cmd ? "D" : "P";
+                    4'd2:    du_byte = du_cmd ? 8'h0D :
+                                         hex2ascii({2'b00, du_markn});
+                    4'd3:    du_byte = du_cmd ? 8'h0A : 8'h0D;
+                    default: du_byte = du_cmd ? 8'h20 : 8'h0A;  // cmd: pos==4 unused
                 endcase
             end
             DU_SYNC: begin
@@ -360,11 +590,16 @@ module dbg_uart (
             du_markn      <= 2'd0;
             du_passcnt    <= 2'd0;
             du_pass_pend  <= 1'b0;
+            du_cmd        <= 1'b0;
         end else begin
             if (dump_pass_stb) begin
                 du_markn     <= du_passcnt;
                 du_passcnt   <= du_passcnt + 2'd1;
                 du_pass_pend <= 1'b1;
+                du_cmd       <= dump_cmd_mode;
+                du_wc        <= 21'd0;    // block syncs align per stream
+                if (dump_cmd_mode)
+                    du_passcnt <= du_passcnt;   // command dumps don't bump $P<n>
             end
 
             if (dump_stb && (du_state == DU_IDLE)) begin
@@ -391,7 +626,7 @@ module dbg_uart (
                     end
                     DU_PASS: begin
                         if (du_load_pulse) begin
-                            if (du_pos == 4'd4)
+                            if (du_pos == (du_cmd ? 4'd3 : 4'd4))
                                 du_state <= DU_IDLE;
                             else
                                 du_pos <= du_pos + 4'd1;
@@ -530,8 +765,13 @@ module dbg_uart (
             7'd77: tx_byte = "T";
             7'd78: tx_byte = "=";
             7'd79: tx_byte = hex2ascii({1'b0, snap_boot_status});
-            7'd80: tx_byte = 8'h0D; // '\r'
-            7'd81: tx_byte = 8'h0A; // '\n'
+            7'd80: tx_byte = " ";
+            7'd81: tx_byte = "C";
+            7'd82: tx_byte = "=";
+            7'd83: tx_byte = hex2ascii(snap_cpdiag[7:4]);
+            7'd84: tx_byte = hex2ascii(snap_cpdiag[3:0]);
+            7'd85: tx_byte = 8'h0D; // '\r'
+            7'd86: tx_byte = 8'h0A; // '\n'
             default: tx_byte = 8'h20;
         endcase
         end
@@ -548,6 +788,8 @@ module dbg_uart (
             txd              <= 1'b1;
             tr_active        <= 1'b0;
             tr_sent          <= 1'b0;
+            tr_pend          <= 1'b0;
+            tr_forced        <= 1'b0;
             tr_dump_done     <= 1'b0;
             tr_line          <= 7'd0;
             snap_pc          <= 24'd0;
@@ -562,17 +804,24 @@ module dbg_uart (
             snap_stopped     <= 1'b0;
             snap_ai7         <= 1'b0;
             snap_boot_status <= 3'd0;
+            snap_cpdiag      <= 8'h00;
             du_send          <= 1'b0;
             du_load_pulse    <= 1'b0;
         end else begin
             tr_dump_done <= 1'b0;
             du_load_pulse <= 1'b0;
+            // sticky latch of the host 'T' pulse (single driver for tr_pend);
+            // ignored while a trace dump is already active.
+            if (trace_req && !tr_active && !tr_pend)
+                tr_pend <= 1'b1;
             case (state)
                 S_IDLE: begin
                     txd <= 1'b1;
-                    if (fault_latched && !tr_sent) begin
+                    if (tr_pend || (fault_latched && !tr_sent)) begin
                         // Trace dump: header + snapshot of the frozen
                         // ring, then let the live ring resume recording.
+                        // A host 'T' command forces the same emission on
+                        // demand (tr_forced: no fault-count side effects).
                         for (k = 0; k < 32; k = k + 1) begin
                             snap_addr_t[k] <= ring_addr[k];
                             snap_data_t[k] <= ring_data[k];
@@ -584,6 +833,12 @@ module dbg_uart (
                             snap_fl_data[k] <= flr_data[k];
                             snap_fl_rw[k]   <= flr_rw[k];
                         end
+                        tr_forced <= tr_pend && !(fault_latched && !tr_sent);
+                        tr_pend   <= 1'b0;
+                        // NB: tr_sent is NOT touched here. Clearing it would
+                        // let a permanently-faulting CPU (derailed fetches
+                        // re-latch fault_latched instantly) restart the
+                        // trace flood forever and starve the du engine.
                         tr_active <= 1'b1;
                         tr_line   <= 7'd0;   // line 0 = header
                         char_idx  <= 7'd0;
@@ -609,6 +864,7 @@ module dbg_uart (
                         snap_stopped     <= dbg_stopped;
                         snap_ai7         <= dbg_ai7;
                         snap_boot_status <= boot_status;
+                        snap_cpdiag      <= cp_diag;
                         char_idx         <= 7'd0;
                         state            <= S_LOAD;
                     end else begin
@@ -643,11 +899,15 @@ module dbg_uart (
                                         // Re-arm: allow the NEXT fault (the
                                         // AI7 aftermath / NMI redirect) to
                                         // dump again once some new cycles
-                                        // have been recorded.
-                                        if (fault_count != 4'hF)
-                                            fault_count <= fault_count + 4'd1;
-                                        if (fault_count == 4'hE)
-                                            tr_sent     <= 1'b1; // cap: 15 dumps
+                                        // have been recorded. Host-forced
+                                        // dumps leave fault bookkeeping alone.
+                                        if (!tr_forced) begin
+                                            if (fault_count != 4'hF)
+                                                fault_count <= fault_count + 4'd1;
+                                            if (fault_count == 4'hE)
+                                                tr_sent <= 1'b1; // cap: 15 dumps
+                                        end
+                                        tr_forced     <= 1'b0;
                                         tr_dump_done  <= 1'b1;   // ring block re-arms
                                         state         <= S_IDLE;
                                     end else begin

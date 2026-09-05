@@ -1,14 +1,1 @@
-{
-  "state": "S2",
-  "when": "2026-09-04T17:34:04.851Z",
-  "pc": "95c5e0",
-  "sr": "2704",
-  "a7": "4b56",
-  "note": " banner/format-loop entry (pc at the $95C5E0 flash scan); framebuffer holds the rendered '... in progress / Do not interrupt!' banner text. Captured 433 ms after S1 by the in-page observer.",
-  "files": {
-    "ram_vectors_0400": "S2_ram_vectors_0400.bin (RAM $000000-$0003FF)",
-    "ram_fb_1000": "S2_ram_fb_1000.bin (RAM $004C00-$005BFF, LCD framebuffer)",
-    "ram_osvars_0200": "S2_ram_osvars_0200.bin (RAM $005B00-$005CFF, OS state vars)",
-    "flash_12000_140000": "S2_flash_12000_140000.bin (chip $012000-$15FFFF, CPU $812000-$95FFFF)"
-  }
-}
+{"state":"S2","when":"2026-09-04T23:42:07.884Z","pc":"95c5e0","sr":"2704","a7":"4b56"}

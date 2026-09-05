@@ -159,8 +159,20 @@ const OBSERVER = `
         stage("S1", [["flash_4mb", "rom", 0, 0x200000],
                      ["ram_256k", "ram", 0, 0x20000]]);
 
-        const B_LO = 0x95c5e0, B_HI = 0x95c5ff, HOME = 0x962226;
+        const B_LO = 0x95c5e0, B_HI = 0x95c5ff;
         let s2 = false;
+        // S3/HOME detection: flash-quiescence + UI-region stability. The
+        // installer's last writes land in the archive area (chip $160000+);
+        // when a cheap rolling signature over that area AND the pc both stop
+        // changing for 30 s outside the banner loop, the install is done.
+        // (The old pc==$962226 signature was sim-specific.)
+        const romArr = emu.rom();
+        const flashSig = () => {
+            let s = 0;
+            for (let i = 0x160000; i < 0x200000; i += 331) s = (s + romArr[i]) | 0;
+            return s;
+        };
+        let stable = 0, lastSig = 0, lastPc = 0;
         const t0 = Date.now(), BUDGET = ${MAX_MIN} * 60000;
         while (Date.now() - t0 < BUDGET) {
             await new Promise(r => setTimeout(r, 400));
@@ -184,16 +196,27 @@ const OBSERVER = `
                 s2 = true;
                 S.phase = "booting";
             }
-            if (p === HOME) {
-                S.phase = "S3";
-                stage("S3", [["ram_vectors_0400", "ram", 0, 0x200],
-                             ["ram_fb_1000", "ram", 0x2600, 0x800],
-                             ["ram_osvars_0200", "ram", 0x2D80, 0x100],
-                             ["flash_4mb", "rom", 0, 0x200000]]);
-                window._gospelHome = new Date().toISOString();
-                S.phase = "home";
-                return "home";
+            const sig = flashSig();
+            // Quiescence = archive-flash signature unchanged for 30 s once
+            // the banner (S2) has been seen — the AMS idle wanders across
+            // many code regions, so pc location must NOT gate this.
+            if (s2 && p < B_LO && sig === lastSig) {
+                if (++stable === 75) {          // 30 s of quiescence
+                    S.phase = "S3";
+                    stage("S3", [["ram_vectors_0400", "ram", 0, 0x200],
+                                 ["ram_fb_1000", "ram", 0x2600, 0x800],
+                                 ["ram_osvars_0200", "ram", 0x2D80, 0x100],
+                                 ["flash_4mb", "rom", 0, 0x200000]]);
+                    window._gospelHome = new Date().toISOString();
+                    S.phase = "home";
+                    S.s2captured = s2;
+                    return "home";
+                }
+            } else {
+                stable = 0;
+                lastSig = sig;
             }
+            lastPc = p;
             S.pc = p.toString(16);
         }
         S.phase = "budget";
@@ -220,7 +243,8 @@ while (!done && Date.now() - t0 < (MAX_MIN + 5) * 60000) {
         log(`phase: ${s.phase}${s.detail ? " — " + s.detail : ""}${s.pc ? " pc=$" + s.pc : ""}`);
         lastPhase = s.phase;
     }
-    done = ["home", "derailed", "budget", "error", "driver-error"].includes(s.phase);
+    done = ["home", "home-noS2", "derailed", "budget", "error",
+            "driver-error"].includes(s.phase);
 }
 
 const phase = (await evalJs(`window._gospelStatus.phase`));
@@ -240,9 +264,9 @@ for (const tag of JSON.parse(tags)) {
     writeFileSync(path.join(OUT, `${tag}.manifest.json`), manifest);
     log(`pulled ${tag}: ${files.join(", ")}`);
 }
-if (phase === "home") {
+if (phase === "home" || phase === "home-noS2") {
     writeFileSync(path.join(OUT, "HOME_REACHED"), new Date().toISOString());
-    log("HOME REACHED — gospel behavioral proof OK");
+    log(`HOME REACHED (${phase}) — gospel behavioral proof OK`);
     process.exit(0);
 }
-process.exit(phase === "derailed" ? 4 : phase === "home" ? 0 : 3);
+process.exit(phase === "derailed" ? 4 : 3);

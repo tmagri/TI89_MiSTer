@@ -67,7 +67,7 @@ case "$1" in
         LOG="$HW_DIR/send_${TS}.log"
         printf '%s\r' "$2" > /tmp/ti89_uart_cmd_$$
         ssh $SSH_OPTS "$MISTER_SSH" \
-            "stty -F $UART_DEV $UART_BAUD raw -echo; cat /tmp/x > $UART_DEV" \
+            "stty -F $UART_DEV $UART_BAUD raw -echo; cat > $UART_DEV" \
             < /tmp/ti89_uart_cmd_$$ 2>&1 | tee "$LOG"
         rm -f /tmp/ti89_uart_cmd_$$
         write_manifest send "$LOG" "send:$2"
@@ -78,18 +78,28 @@ case "$1" in
         MEM="$2"; START="$3"; LEN="$4"
         OUT="${5:-$HW_DIR/dump_${MEM}_${START}_${LEN}_${TS}.bin}"
         LOG="${OUT%.bin}.log"
-        # Framing: response = '$D' lines every 4096 words + raw bytes
-        # (same @xxxxxx sync framing as the pre-boot dump). Expected byte
-        # count = LEN + 9*ceil(LEN/8192) + slack for a '$D' header line.
+        # Framing: response = "$D\r\n" marker line, then per 4096-word block
+        # a 9-byte "@xxxxxx\r\n" sync + 8192 raw bytes (same block framing as
+        # the pre-boot dump). Expected = 4 + 9*ceil(words/4096) + LEN(even);
+        # +16 slack covers any interleaved status characters.
         WORDS=$(( (0x$LEN + 1) / 2 ))
         BLOCKS=$(( (WORDS + 4095) / 4096 ))
-        EXPECT=$(( 0x$LEN + 9 * BLOCKS + 16 ))
-        echo "dump MEM=$MEM start=0x$START len=0x$LEN -> $OUT (expect ~$EXPECT bytes)"
+        EXPECT=$(( 0x$LEN + 9 * BLOCKS + 20 ))
+        S6=$(printf '%06X' $((16#$START)))
+        L6=$(printf '%06X' $((16#$LEN)))
+        DUR=$(( (EXPECT / 11520) + 4 ))
+        echo "dump MEM=$MEM start=0x$S6 len=0x$L6 -> $OUT (expect ~$EXPECT bytes, ${DUR}s)"
+        # Reader attaches FIRST: the "$D" marker comes ~350 us after the
+        # command, so a reader started after `printf` loses it and shifts
+        # the whole capture. Remote tmp file -> host on completion.
         ssh $SSH_OPTS "$MISTER_SSH" \
             "stty -F $UART_DEV $UART_BAUD raw -echo; \
-             printf 'D $MEM $START $LEN\r\n' > $UART_DEV; \
-             head -c $EXPECT $UART_DEV" > "$OUT" 2> "$LOG"
-        # secondary capture of status lines that may interleave
+             rm -f /tmp/ti89_cap; \
+             (timeout $DUR cat $UART_DEV > /tmp/ti89_cap) & \
+             sleep 0.5; \
+             printf 'D $MEM $S6 $L6\r\n' > $UART_DEV; \
+             wait; \
+             cat /tmp/ti89_cap; rm -f /tmp/ti89_cap" > "$OUT" 2> "$LOG"
         write_manifest dump "$OUT" "dump:$MEM \$$(printf %06s $START) len \$$(printf %06s $LEN)"
         echo "captured: $OUT ($(wc -c < "$OUT") bytes)"
         ;;

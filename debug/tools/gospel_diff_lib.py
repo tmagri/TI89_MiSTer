@@ -44,6 +44,36 @@ def parse_run8(path):
     return bytes(img)
 
 
+def parse_dump_stream(data, expect_bytes=None):
+    """Parse a "$D\\r\\n" command-dump response: the 4-byte marker line, then
+    blocks of one 9-byte "@xxxxxx\\r\\n" sync + up to 8192 raw bytes (same
+    block framing as the $P stream, block-aligned to the command stream).
+    Structural walk: each block is 8192 bytes unless it is the last (capture
+    ends at the payload end). Leading junk (interleaved status characters)
+    is skipped by the find()."""
+    i = data.find(b"$D")
+    if i < 0:
+        raise ValueError("no $D marker in stream")
+    i += 4                                    # "$D\r\n"
+    out = bytearray()
+    first = True
+    while True:
+        if not first or data[i:i + 1] == b"@":
+            if data[i:i + 1] != b"@" or data[i + 7:i + 9] != b"\r\n":
+                break                          # end of framed blocks
+            i += 9
+        first = False
+        rem = len(data) - i
+        take = min(8192, rem)
+        if take <= 0:
+            break
+        out += data[i:i + take]
+        i += take
+        if take < 8192:
+            break
+    return bytes(out)
+
+
 def bounded_diff(a, b, base=0):
     n = min(len(a), len(b))
     return [(base + i, a[i], b[i]) for i in range(n) if a[i] != b[i]]

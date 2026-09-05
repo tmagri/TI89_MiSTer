@@ -1,0 +1,6 @@
+[7s] launching in-page observer (boots OS, stages dumps; never pauses)…
+[9s] phase: booting pc=$95c5e0
+[1808s] phase: budget pc=$9590e2
+[1808s] final phase: budget
+[1808s] pulled S1: flash_4mb, ram_256k
+[1808s] pulled S2: ram_vectors_0400, ram_fb_1000, ram_osvars_0200, flash_12000_140000

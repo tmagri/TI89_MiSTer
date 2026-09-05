@@ -1,0 +1,8 @@
+[7s] launching in-page observer (boots OS, stages dumps; never pauses)…
+[9s] phase: booting pc=$95c5ea
+[198s] phase: home pc=$841ee2
+[198s] final phase: home
+[198s] pulled S1: flash_4mb, ram_256k
+[198s] pulled S2: ram_vectors_0400, ram_fb_1000, ram_osvars_0200, flash_12000_140000
+[198s] pulled S3: ram_vectors_0400, ram_fb_1000, ram_osvars_0200, flash_4mb
+[198s] HOME REACHED (home) — gospel behavioral proof OK

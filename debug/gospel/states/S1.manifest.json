@@ -1,12 +1,1 @@
-{
-  "state": "S1",
-  "when": "2026-09-04T17:34:04.418Z",
-  "pc": "812188",
-  "sr": "2700",
-  "a7": "4c00",
-  "note": " gospel reset entry state; flash pristine (pre-format). Captured via cdp_gospel.mjs observer (setRom of the RTL-identical synthesis); pulled manually.",
-  "files": {
-    "flash_4mb": "S1_flash_4mb.bin (4194304 bytes)",
-    "ram_256k": "S1_ram_256k.bin (262144 bytes)"
-  }
-}
+{"state":"S1","when":"2026-09-04T23:42:07.452Z","pc":"812188","sr":"2700","a7":"4c00"}
