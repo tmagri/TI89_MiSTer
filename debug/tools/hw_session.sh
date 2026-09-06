@@ -103,11 +103,62 @@ case "$1" in
         write_manifest dump "$OUT" "dump:$MEM \$$(printf %06s $START) len \$$(printf %06s $LEN)"
         echo "captured: $OUT ($(wc -c < "$OUT") bytes)"
         ;;
-    raw)
-        [ $# -ge 2 ] || usage
-        LOG="$HW_DIR/raw_${TS}.log"
-        ssh $SSH_OPTS "$MISTER_SSH" "$2" 2>&1 | tee "$LOG"
-        write_manifest raw "$LOG" "raw:$2"
+    wrtest)
+        # wrtest <R> <hexstart> <hexlen> : pattern-write integrity loop.
+        # Sends the W command (counting-word pattern write), then a D
+        # readback of the same range, then compares against the expected
+        # pattern. Catches SDRAM write-path corruption on hardware.
+        [ $# -ge 4 ] || usage
+        MEM="$2"; START="$3"; LEN="$4"
+        [ "$MEM" == "R" ] || { echo "wrtest supports R (calc RAM) only"; exit 1; }
+        S6=$(printf '%06X' $((16#$START)))
+        L6=$(printf '%06X' $((16#$LEN)))
+        DUR=$(( (0x$LEN / 11520) + 8 ))
+        CAP="$HW_DIR/wrtest_${MEM}_${START}_${LEN}_${TS}.bin"
+        echo "wrtest: W R $S6 $L6 then D R $S6 $L6 (window ${DUR}s)"
+        timeout $((DUR + 20)) ssh $SSH_OPTS "$MISTER_SSH" \
+            "stty -F $UART_DEV $UART_BAUD raw -echo; \
+             timeout 2 cat $UART_DEV > /dev/null; \
+             (timeout $DUR cat $UART_DEV > /tmp/ti89_wt) & \
+             sleep 0.5; \
+             printf 'W $MEM $S6 $L6\r' > $UART_DEV; \
+             sleep 3; \
+             printf 'D $MEM $S6 $L6\r' > $UART_DEV; \
+             wait; cat /tmp/ti89_wt" > "$CAP" 2> /dev/null
+        write_manifest wrtest "$CAP" "wrtest:$MEM \$$(printf %06s $START) len \$$(printf %06s $LEN)"
+        python3 - "$CAP" "$START" "$LEN" <<'PYEOF'
+import sys
+data = open(sys.argv[1], "rb").read()
+i = data.find(b"$D")
+if i < 0:
+    print("WRTEST: no $D response captured"); sys.exit(1)
+i += 4
+start_w = int(sys.argv[2], 16) // 2
+n_words = int(sys.argv[3], 16) // 2
+out = bytearray()
+while len(out) < n_words * 2:
+    if data[i:i+1] != b"@" or data[i+7:i+9] != b"\r\n": break
+    i += 9
+    take = min(8192, n_words*2 - len(out))
+    if take <= 0: break
+    out += data[i:i+take]; i += take
+mism = 0; first = None; bit_hist = {}
+for k in range(n_words):
+    exp = (start_w + k) & 0xFFFF
+    got = (out[2*k] << 8) | out[2*k+1] if 2*k+1 < len(out) else None
+    if got != exp:
+        mism += 1
+        if first is None: first = (start_w + k) * 2
+        d = exp ^ (got if got is not None else 0xFFFF)
+        for bit in range(16):
+            if d & (1 << bit): bit_hist[bit] = bit_hist.get(bit, 0) + 1
+print(f"WRTEST: {mism} of {n_words} words mismatched")
+if mism:
+    print(f"  first mismatch at word {first // 2} (byte ${first * 2:06X})")
+    print(f"  bit histogram (bit: count): {dict(sorted(bit_hist.items(), reverse=True))}")
+    sys.exit(1)
+print("  RAM write+readback path CLEAN")
+PYEOF
         ;;
     *)
         usage

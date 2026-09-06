@@ -49,11 +49,16 @@ module dbg_uart (
     //     F: flash window (chip byte offset in the 4 MB SDRAM image)
     //     R: calculator RAM (byte offset in the 256 KB calc RAM)
     //     len is clamped to 2 MB and rounded down to even.
+    //   W R <6-hex start> <6-hex len>       RAM pattern-write integrity
+    //     test: writes the counting word pattern (start_words + i) into
+    //     calc RAM; the host reads it back with D and compares. P3 write-
+    //     path corruption probe. R only (flash writes rejected).
     //   T                                    emit trace rings now
     input             rxd,
     input             boot_done,
     output reg        cmd_req,          // 1-clk pulse into mem_ctrl
     output reg        cmd_mem,          // 0 = flash image, 1 = calc RAM
+    output reg        cmd_wr,           // 1 = pattern-write command
     output reg [23:0] cmd_start,        // byte offset
     output reg [23:0] cmd_len,          // byte length (even, clamped)
     output reg        trace_req,        // 1-clk pulse: emit trace rings
@@ -396,7 +401,7 @@ module dbg_uart (
     // Command parser state: which field we are in + accumulated values.
     // Variable-width hex (a superset of the fixed-width format): fields end
     // at ' ' / CR, so the host may send "D F 4C00 1000" or "D F 004C00 001000".
-    localparam [2:0] CP_CMD = 3'd0;   // expecting 'D' or 'T'
+    localparam [2:0] CP_CMD = 3'd0;   // expecting 'D', 'W' or 'T'
     localparam [2:0] CP_SP1 = 3'd1;   // space after cmd
     localparam [2:0] CP_MEM = 3'd2;   // 'F' or 'R'
     localparam [2:0] CP_SP2 = 3'd3;   // space after F/R
@@ -406,6 +411,7 @@ module dbg_uart (
     reg  [23:0] cp_start;
     reg  [23:0] cp_len;
     reg         cp_mem;     // 'R' seen
+    reg         cp_wr;      // 'W' seen (pattern-write command)
     reg         cp_bad;     // malformed line: swallow until CR/LF
     reg  [7:0]  cp_diag;    // parser end-state at last CR (status "C=" field)
 
@@ -428,13 +434,17 @@ module dbg_uart (
             if (n[0])
                 n = {n[23:1], 1'b0};              // even byte count
             cmd_mem    <= cp_mem;
+            cmd_wr     <= cp_wr;
             cmd_start  <= cp_start;
             cmd_len    <= n;
             // pulse suppressed (mem_ctrl would ignore it anyway; the host
             // simply gets no "$D" response) when out of range/zero length/
-            // boot not done/a boot dump is in flight.
+            // boot not done/a boot dump is in flight. 'W' is RAM-only:
+            // flash-window pattern writes are rejected (the SDRAM image
+            // must not be corrupted from the debug port).
             cmd_req    <= !dump_active && boot_done &&
-                          (n != 24'd0) && (cp_start < limit);
+                          (n != 24'd0) && (cp_start < limit) &&
+                          !(cp_wr && !cp_mem);
         end
     endtask
 
@@ -444,10 +454,12 @@ module dbg_uart (
             cp_start  <= 24'd0;
             cp_len    <= 24'd0;
             cp_mem    <= 1'b0;
+            cp_wr     <= 1'b0;
             cp_bad    <= 1'b0;
             cp_diag   <= 8'h00;
             cmd_req   <= 1'b0;
             cmd_mem   <= 1'b0;
+            cmd_wr    <= 1'b0;
             cmd_start <= 24'd0;
             cmd_len   <= 24'd0;
             trace_req <= 1'b0;
@@ -457,19 +469,27 @@ module dbg_uart (
             if (rx_we) begin
                 if (rx_d == 8'h0D || rx_d == 8'h0A) begin
                     // Line end: "T" (CP_SP1 with cmd 't') -> trace;
-                    // complete "D ..." (CP_L, not bad) -> issue.
-                    cp_diag <= {cp_bad, 1'b0, cp_st};
+                    // complete "D"/"W ..." (CP_L, not bad) -> issue.
+                    cp_diag <= {cp_bad, cp_wr, cp_st};
                     if (!cp_bad && cp_st == CP_L)
                         cp_issue;
                     else if (!cp_bad && cp_st == CP_SP1)
                         trace_req <= 1'b1;      // "T" (latched by TX FSM)
                     cp_st   <= CP_CMD;
                     cp_bad  <= 1'b0;
+                    cp_wr   <= 1'b0;
                 end else if (!cp_bad) begin
                     case (cp_st)
                         CP_CMD: begin
-                            if (rx_lc == "d" || rx_lc == "t")
+                            if (rx_lc == "d" || rx_lc == "t" || rx_lc == "w") begin
+                                cp_wr <= (rx_lc == "w"); // 'W' = write cmd
                                 cp_st <= CP_SP1;
+                            end else
+                                cp_bad <= 1'b1;
+                        end
+                        CP_SP1: begin
+                            if (rx_d == " ")
+                                cp_st <= CP_MEM;
                             else
                                 cp_bad <= 1'b1;
                         end

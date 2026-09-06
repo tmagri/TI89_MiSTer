@@ -514,6 +514,7 @@ module emu
 	// Host command dumps (dbg_uart RX -> mem_ctrl)
 	wire        dbg_cmd_req;
 	wire        dbg_cmd_mem;
+	wire        dbg_cmd_wr;
 	wire [23:0] dbg_cmd_start;
 	wire [23:0] dbg_cmd_len;
 	wire        dbg_trace_req;   // reserved: rings are emitted by dbg_uart itself
@@ -590,6 +591,7 @@ module emu
 
 		.cmd_req(dbg_cmd_req),
 		.cmd_mem(dbg_cmd_mem),
+		.cmd_wr(dbg_cmd_wr),
 		.cmd_start(dbg_cmd_start),
 		.cmd_len(dbg_cmd_len),
 		.dump_cmd_mode(dump_cmd_mode)
@@ -948,6 +950,7 @@ module emu
 		.boot_done(boot_done),
 		.status_mute(status[7]),
 		.cmd_req(dbg_cmd_req),
+		.cmd_wr(dbg_cmd_wr),
 		.cmd_mem(dbg_cmd_mem),
 		.cmd_start(dbg_cmd_start),
 		.cmd_len(dbg_cmd_len),

@@ -156,6 +156,7 @@ module mem_ctrl (
     // start/len from the (already validated/clamped) command inputs.
     input             cmd_req,
     input             cmd_mem,      // 0 = flash image, 1 = calculator RAM
+    input             cmd_wr,       // 1 = pattern-write command (RAM only)
     input      [23:0] cmd_start,    // byte offset (even)
     input      [23:0] cmd_len,      // byte length (even, nonzero)
     output reg        dump_cmd_mode
@@ -469,10 +470,14 @@ module mem_ctrl (
 
     // Command dump (host 'D' command): range + progress
     reg        cmd_mem_r;      // 0 = flash image, 1 = calc RAM
+    reg        cmd_wr_r;       // 1 = pattern-write command (W)
     reg [23:0] cmd_start_r;    // first byte offset (even)
     reg [23:0] cmd_left_r;     // bytes remaining (even)
     reg [22:0] cmd_total_w;    // total words in the command range
     wire [22:0] cmd_cur_w = cmd_total_w - cmd_left_r[22:1]; // current word index
+    // Pattern-write data: counting word = (start_words + index) & 0xFFFF —
+    // the host mirrors this exactly when checking the readback.
+    wire [15:0] cmd_pat_w = cmd_start_r[17:1] + cmd_cur_w[16:0];
 
     assign dump_active = (boot_state == B_DPASS) || (boot_state == B_DREQ) ||
                          (boot_state == B_DWAIT) || (boot_state == B_CPASS) ||
@@ -843,6 +848,7 @@ module mem_ctrl (
             dump_pass       <= 2'd0;
             dwait_rd        <= 1'b0;
             cmd_mem_r       <= 1'b0;
+            cmd_wr_r        <= 1'b0;
             cmd_start_r     <= 24'd0;
             cmd_left_r      <= 24'd0;
             cmd_total_w     <= 23'd0;
@@ -961,6 +967,7 @@ module mem_ctrl (
                     // validated/clamped by dbg_uart's parser.
                     if (cmd_req) begin
                         cmd_mem_r      <= cmd_mem;
+                        cmd_wr_r       <= cmd_wr;
                         cmd_start_r    <= cmd_start;
                         cmd_left_r     <= cmd_len;
                         cmd_total_w    <= cmd_len[23:1];
@@ -985,35 +992,48 @@ module mem_ctrl (
                 B_CREQ: begin
                     if (!boot_ram_want && !boot_ram_flying) begin
                         boot_ram_want  <= 1'b1;
-                        boot_ram_we    <= 1'b0;    // read
                         // lowest-priority RAM slot; CPU keeps running.
                         // dbg_uart clamps start+len to the region, so both
                         // sums below stay within their field widths.
+                        boot_ram_we    <= cmd_wr_r;    // write or read
                         if (cmd_mem_r)
                             boot_ram_addr <= RAM_BASE +
                                 {7'd0, (cmd_start_r[17:1] + cmd_cur_w[16:0]), 1'b0};
                         else
                             boot_ram_addr <= {3'd0,
                                 (cmd_start_r[21:1] + cmd_cur_w[20:0]), 1'b0};
-                        boot_ram_wdata <= 16'd0;
+                        boot_ram_wdata <= cmd_pat_w;   // counting pattern
                     end
                     if (boot_ram_want || boot_ram_flying)
                         boot_state <= B_CWAITW;
                 end
 
                 B_CWAITW: begin
-                    // mirrors B_DWAIT: dwait_rd gives the grant FSM one cycle
-                    // to latch dump_rd_data, then the combinational dump_stb
+                    // Write mode: complete per word (no dump handshake —
+                    // nothing is handed to dbg_uart). Read mode mirrors
+                    // B_DWAIT: dwait_rd gives the grant FSM one cycle to
+                    // latch dump_rd_data, then the combinational dump_stb
                     // hands the word over exactly when dbg_uart is idle.
-                    if (boot_ram_done)
-                        dwait_rd <= 1'b1;
-                    if (dwait_rd && dump_rdy) begin
-                        dwait_rd <= 1'b0;
-                        if (cmd_left_r == 24'd2) begin
-                            boot_state <= B_CEND;
-                        end else begin
-                            cmd_left_r <= cmd_left_r - 24'd2;
-                            boot_state <= B_CREQ;
+                    if (cmd_wr_r) begin
+                        if (boot_ram_done) begin
+                            if (cmd_left_r == 24'd2)
+                                boot_state <= B_CEND;
+                            else begin
+                                cmd_left_r <= cmd_left_r - 24'd2;
+                                boot_state <= B_CREQ;
+                            end
+                        end
+                    end else begin
+                        if (boot_ram_done)
+                            dwait_rd <= 1'b1;
+                        if (dwait_rd && dump_rdy) begin
+                            dwait_rd <= 1'b0;
+                            if (cmd_left_r == 24'd2) begin
+                                boot_state <= B_CEND;
+                            end else begin
+                                cmd_left_r <= cmd_left_r - 24'd2;
+                                boot_state <= B_CREQ;
+                            end
                         end
                     end
                 end
