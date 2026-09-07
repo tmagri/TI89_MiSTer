@@ -60,6 +60,7 @@ module mem_ctrl (
     input         rom_loaded,  // OS image present in SDRAM (from rom_loader)
     input         init_done,   // SDRAM controller initialized
     output reg    boot_done,   // boot complete — CPU may leave reset
+    input         dump_en,     // OSD: 1 = run pre-boot SDRAM dump, 0 = skip
 
     // CPU bus interface
     input  [23:1] cpu_addr,
@@ -867,7 +868,7 @@ module mem_ctrl (
             case (boot_state)
                 B_WAIT: begin
                     if (init_done)
-                        boot_state <= B_DPASS;
+                        boot_state <= dump_en ? B_DPASS : B_CLEAR;
                 end
 
                 B_DPASS: begin

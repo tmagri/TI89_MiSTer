@@ -55,21 +55,23 @@ This is stated upfront because it is fair for anyone evaluating the code to know
 | F6 / End | CATALOG |
 | F7 / Home | HOME |
 | F8 | MODE |
-| 0–9 | 0–9 |
+| 0–9 (top row or numpad) | 0–9 |
 | X / Y / Z / T | X / Y / Z / T |
 | Enter | ENTER |
 | Backspace | BACKSPACE |
 | ESC | ESC |
 | Space | (−) NEGATE |
 | Tab | STO→ |
-| ` (backquote) | ^ (power) |
+| ` ` ` | ^ (power) |
 | = | = |
-| `]` / `[ | ( / ) |
+| `]` / `[` | ( / ) |
 | , and . | , and . |
 | \ | \| (pipe) |
 | Arrow keys | Cursor pad |
 | Numpad `+` `−` `*` `/` | + − × ÷ |
 | `-` | − (minus) |
+| `'` (apostrophe) | + (plus) — Mac / no-numpad alternative |
+| `/` (slash) | ÷ (divide) — Mac / no-numpad alternative |
 | Delete | CLEAR |
 | Insert | ON |
 | Page Up | APPS |

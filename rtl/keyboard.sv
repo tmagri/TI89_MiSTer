@@ -78,8 +78,11 @@ module keyboard (
             kbd_int      <= 1'b0;
             ps2_strobe_prev <= ps2_strobe;
 
-            // Process on rising edge of strobe
-            if (ps2_strobe && !ps2_strobe_prev) begin
+            // Process on any edge of the toggle bit (rising or falling)
+            // The hps_io toggle bit alternates 0→1→0→1 on every event,
+            // so we must detect both edges — matching the pattern used by
+            // MacPlus (adb.sv, ps2_kbd.sv) and MegaDrive (saturn_keyboard.sv).
+            if (ps2_strobe != ps2_strobe_prev) begin
                 reg [3:0] row;
                 reg [2:0] col;
                 reg       valid;
@@ -130,11 +133,27 @@ module keyboard (
                         8'h1A: begin row = 4'd3; col = 3'd2; valid = 1'b1; end  // Z → TIKEY_Z
                         8'h2C: begin row = 4'd2; col = 3'd2; valid = 1'b1; end  // T → TIKEY_T
 
-                        // Operators
+                        // Operators — numpad (non-extended, Num Lock on)
                         8'h79: begin row = 4'd1; col = 3'd6; valid = 1'b1; end  // Numpad + → PLUS
                         8'h7B: begin row = 4'd1; col = 3'd5; valid = 1'b1; end  // Numpad - → MINUS
                         8'h7C: begin row = 4'd1; col = 3'd4; valid = 1'b1; end  // Numpad * → MULTIPLY
-                        // Numpad / is extended, handled below
+                        // Numpad / extended → DIVIDE (handled in extended block below)
+
+                        // Numpad 0–9 (non-extended with Num Lock on) → same as number row
+                        8'h70: begin row = 4'd4; col = 3'd7; valid = 1'b1; end  // Numpad 0 → TIKEY_0
+                        8'h69: begin row = 4'd4; col = 3'd6; valid = 1'b1; end  // Numpad 1 → TIKEY_1
+                        8'h72: begin row = 4'd3; col = 3'd6; valid = 1'b1; end  // Numpad 2 → TIKEY_2
+                        8'h7A: begin row = 4'd2; col = 3'd6; valid = 1'b1; end  // Numpad 3 → TIKEY_3
+                        8'h6B: begin row = 4'd4; col = 3'd5; valid = 1'b1; end  // Numpad 4 → TIKEY_4
+                        8'h73: begin row = 4'd3; col = 3'd5; valid = 1'b1; end  // Numpad 5 → TIKEY_5
+                        8'h74: begin row = 4'd2; col = 3'd5; valid = 1'b1; end  // Numpad 6 → TIKEY_6
+                        8'h6C: begin row = 4'd4; col = 3'd4; valid = 1'b1; end  // Numpad 7 → TIKEY_7
+                        8'h75: begin row = 4'd3; col = 3'd4; valid = 1'b1; end  // Numpad 8 → TIKEY_8
+                        8'h7D: begin row = 4'd2; col = 3'd4; valid = 1'b1; end  // Numpad 9 → TIKEY_9
+
+                        // Mac / no-numpad single-key alternatives
+                        8'h4A: begin row = 4'd1; col = 3'd3; valid = 1'b1; end  // / (slash) → DIVIDE
+                        8'h52: begin row = 4'd1; col = 3'd6; valid = 1'b1; end  // ' (apostrophe) → PLUS
 
                         8'h55: begin row = 4'd5; col = 3'd3; valid = 1'b1; end  // = → EQUALS
                         8'h54: begin row = 4'd3; col = 3'd3; valid = 1'b1; end  // [ → PARIGHT (using [ for ))
@@ -181,8 +200,10 @@ module keyboard (
                 end
 
                 // Apply key state change
+                // TiEmu get_rowmask() reverses column order: col 0 → bit 7, col 7 → bit 0.
+                // We must store into bit (7-col) so col_data matches hw_kbd_read_cols().
                 if (valid) begin
-                    key_matrix[row][col] <= ps2_pressed;
+                    key_matrix[row][3'd7 - col] <= ps2_pressed;
                     if (ps2_pressed)
                         kbd_int <= 1'b1; // Trigger AI2 on key press
                 end

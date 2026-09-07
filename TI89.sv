@@ -248,6 +248,7 @@ module emu
 		"O[5:4],LCD Scale,4x,3x,2x,1x;",
 		"O6,Debug Overlay,On,Off;",
 		"O7,UART Status Line,On,Off;",
+		"O8,SDRAM Dump,Off,On;",
 		"-;",
 		"R0,Reset;",
 		"V,v1.0;"
@@ -559,6 +560,7 @@ module emu
 		.rom_loaded(rom_loaded),
 		.init_done(sdram_init_done),
 		.boot_done(boot_done),
+		.dump_en(status[8]),
 
 		.cpu_addr(cpu_addr),
 		.cpu_dout(cpu_dout),
