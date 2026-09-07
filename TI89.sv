@@ -7,8 +7,9 @@
 //
 // Clocking:
 //   CLK_50M -> PLL -> 60 MHz master clock (clk_sys)
-//   The whole core runs from clk_sys. The SDRAM controller derives
-//   SDRAM_CLK by inverting it (phase-shifted output for the SDRAM chip).
+//   The whole core runs from clk_sys. The SDRAM chip clock (SDRAM_CLK)
+//   is a clean 50% duty-cycle inversion of clk_sys, generated in the IO
+//   row by altddio_out (same pattern as sys_top.v's hdmi/vga clocks).
 //   CLK_VIDEO = clk_sys, video pixels are strobed by CE_PIXEL.
 //
 // Boot flow:
@@ -186,7 +187,7 @@ module emu
 	///////////////////////////////////////////////////////////////////////////
 
 	wire clk_sys;      // 60 MHz master clock
-	wire clk_sdram;    // 60 MHz SDRAM clock (-3000 ps phase shifted)
+	wire clk_sdram;    // 60 MHz SDRAM clock (clean ~clk_sys via altddio_out)
 	wire pll_locked;
 
 	// Wrapper (rtl/pll.v) so the PLL hierarchy matches the exclusive clock
@@ -196,10 +197,39 @@ module emu
 		.refclk(CLK_50M),
 		.rst(RESET),
 		.outclk_0(clk_sys),        // 60 MHz
-		.outclk_1(clk_sdram),      // 60 MHz (-3000 ps)
+		.outclk_1(),               // unused (SDRAM clock now via altddio_out)
 		.locked(pll_locked),
 		.reconfig_to_pll(64'd0),
 		.reconfig_from_pll()
+	);
+
+	// SDRAM clock: clean 50% duty-cycle inversion of clk_sys, generated in
+	// the IO row next to the SDRAM_CLK pin (same pattern as sys_top.v's
+	// hdmi/vga clocks). This replaces the fragile PLL phase-shifted output,
+	// which caused intermittent SDRAM read bit-errors on hardware.
+	altddio_out
+	#(
+		.extend_oe_disable("OFF"),
+		.intended_device_family("Cyclone V"),
+		.invert_output("OFF"),
+		.lpm_hint("UNUSED"),
+		.lpm_type("altddio_out"),
+		.oe_reg("UNREGISTERED"),
+		.power_up_high("OFF"),
+		.width(1)
+	)
+	sdramclk_ddr
+	(
+		.datain_h(1'b0),
+		.datain_l(1'b1),
+		.outclock(clk_sys),
+		.dataout(clk_sdram),
+		.aclr(1'b0),
+		.aset(1'b0),
+		.oe(1'b1),
+		.outclocken(1'b1),
+		.sclr(1'b0),
+		.sset(1'b0)
 	);
 
 	wire reset = RESET | ~pll_locked;

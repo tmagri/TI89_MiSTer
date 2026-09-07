@@ -1,0 +1,10 @@
+>/opt/homebrew/lib/ghdl/ieee/v93/
+../../src/ieee/v93/std_logic_1164.vhdl
+>/opt/homebrew/lib/ghdl/ieee/v93/
+../../src/ieee/v93/std_logic_1164-body.vhdl
+>/opt/homebrew/lib/ghdl/ieee/v93/
+../../src/ieee/v93/numeric_std.vhdl
+>/opt/homebrew/lib/ghdl/ieee/v93/
+../../src/ieee/v93/numeric_std-body.vhdl
+>
+ascal.vhd

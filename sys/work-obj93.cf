@@ -1,0 +1,4 @@
+v 4
+file . "ascal.vhd" "adf1665c6f3e768890f4b688a3f78e626cb34d8c" "20260826063731.498":
+  entity ascal at 74( 2771) + 0 on 13;
+  architecture rtl of ascal at 269( 9965) + 0 on 14;
