@@ -1,9 +1,5 @@
 # TI89_MiSTer
 
-> ⚠️ **NOTE: This repository is currently under active development.**
-> Expect frequent updates, incomplete features, and breaking changes. Please be aware that the project is **currently working - it will crash or have issues**. 
-> I am building this out of pure personal interest (albeit a bit nerdy on my behalf!), as the TI-89 Titanium is my all-time favorite calculator.
-
 A [TI-89 Titanium](https://en.wikipedia.org/wiki/TI-89) graphing calculator core for the [MiSTer](https://github.com/MiSTer-devel) FPGA platform.
 
 The core recreates the TI-89 Titanium (HW3) on the Terasic DE10-Nano board: a cycle-accurate Motorola 68000 (via the FX68K core), the 256 KB RAM / 4 MB flash memory map, the memory-mapped I/O registers, the 10×8 keyboard scan matrix, the auto-interrupt/timer logic, and the 160×100 monochrome LCD controller with DMA — all running on real hardware logic rather than software emulation.
