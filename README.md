@@ -1,7 +1,7 @@
 # TI89_MiSTer
 
 > ⚠️ **NOTE: This repository is currently under active development.**
-> Expect frequent updates, incomplete features, and breaking changes. Please be aware that the project is **currently not working or operational**. 
+> Expect frequent updates, incomplete features, and breaking changes. Please be aware that the project is **currently working - it will crash or have issues**. 
 > I am building this out of pure personal interest (albeit a bit nerdy on my behalf!), as the TI-89 Titanium is my all-time favorite calculator.
 
 A [TI-89 Titanium](https://en.wikipedia.org/wiki/TI-89) graphing calculator core for the [MiSTer](https://github.com/MiSTer-devel) FPGA platform.
@@ -49,14 +49,36 @@ This is stated upfront because it is fair for anyone evaluating the code to know
 |---|---|
 | Caps Lock | ALPHA |
 | Left Ctrl | ♦ (Diamond) |
-| Left Shift | SHIFT |
-| Left Alt | 2ND |
+| Left Shift / Right Shift | SHIFT |
+| Left Alt / Right Alt | 2ND |
 | F1–F5 | F1–F5 |
 | F6 / End | CATALOG |
 | F7 / Home | HOME |
 | F8 | MODE |
 | 0–9 (top row or numpad) | 0–9 |
-| X / Y / Z / T | X / Y / Z / T |
+| X / Y / Z / T | X / Y / Z / T (dedicated keys — no ALPHA needed) |
+| A | ALPHA + = |
+| B | ALPHA + ( |
+| C | ALPHA + ) |
+| D | ALPHA + , |
+| E | ALPHA + ÷ |
+| F | ALPHA + \| (pipe) |
+| G | ALPHA + 7 |
+| H | ALPHA + 8 |
+| I | ALPHA + 9 |
+| J | ALPHA + × |
+| K | ALPHA + EE |
+| L | ALPHA + 4 |
+| M | ALPHA + 5 |
+| N | ALPHA + 6 |
+| O | ALPHA + − |
+| P | ALPHA + STO→ |
+| Q | ALPHA + 1 |
+| R | ALPHA + 2 |
+| S | ALPHA + 3 |
+| U | ALPHA + + |
+| V | ALPHA + 0 |
+| W | ALPHA + . |
 | Enter | ENTER |
 | Backspace | BACKSPACE |
 | ESC | ESC |
@@ -64,7 +86,7 @@ This is stated upfront because it is fair for anyone evaluating the code to know
 | Tab | STO→ |
 | ` ` ` | ^ (power) |
 | = | = |
-| `]` / `[` | ( / ) |
+| `[` / `]` | ( / ) |
 | , and . | , and . |
 | \ | \| (pipe) |
 | Arrow keys | Cursor pad |
@@ -148,6 +170,8 @@ The `references/` directory is excluded from git (see `.gitignore`). If you want
 | TiEmu | <https://github.com/debrouxl/tiemu> | GPLv2+ | Hardware behavior reference: keyboard matrix, I/O ports, memory map |
 | TI-89 JavaScript simulator (emu68k fork) | <https://tiplanet.org/emu68k_fork/> / Patrick Davidson's original | GPL | Timer/interrupt model, flash WSM word model |
 | z80ti-fpga | <https://github.com/hellux/z80ti-fpga> | GPLv3 | FPGA calculator design reference |
+| MacPlus-MiSTer | <https://github.com/MiSTer-devel/MacPlus_MiSTer> | GPLv3 | SDRAM design reference |
+| MegaDri e-MiSTer | <https://github.com/MiSTer-devel/MegaDrive_MiSTer> | GPLv3 | SDRAM design reference |
 
 None of this reference code is compiled into the bitstream; only the components in the table above are.
 
