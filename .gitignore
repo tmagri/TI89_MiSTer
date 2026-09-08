@@ -39,7 +39,6 @@ build_id.v
 c5_pin_model_dump.txt
 PLLJ_PLLSPE_INFO.txt
 *.sof
-*.rbf
 *.pof
 *.qws
 *.ddb
