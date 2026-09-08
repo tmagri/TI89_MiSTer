@@ -2,7 +2,7 @@
 // FX68K
 //
 // M68000 cycle accurate, fully synchronous
-// Copyright (c) 2018 by Jorge Cwik
+// Copyright (c) 2018,2021 by Jorge Cwik
 // 
 // TODO:
 // - Everything except bus retry already implemented.
@@ -383,10 +383,10 @@ module fx68k(
 			rFC <= '0;
 		else if( enT1 & Nanod.permStart) begin		// S0 phase of bus cycle
 			rFC[2] <= pswS;
-			// PC relativ access is marked as FC type 'n' (0) at ucode.
+			// If FC is type 'n' (0) at ucode, access type depends on PC relative mode		
 			// We don't care about RZ in this case. Those uinstructions with RZ don't start a bus cycle.
-			rFC[1] <= microLatch[ 16] | ( ~microLatch[ 15] & ~Irdecod.isPcRel);
-			rFC[0] <= microLatch[ 15] | ( ~microLatch[ 16] & Irdecod.isPcRel);
+			rFC[1] <= microLatch[ 16] | ( ~microLatch[ 15] & Irdecod.isPcRel);
+			rFC[0] <= microLatch[ 15] | ( ~microLatch[ 16] & ~Irdecod.isPcRel);
 		end
 	end
 	
@@ -1771,9 +1771,11 @@ endmodule
 // Also checks for illegal opcode and priv violation
 
 // This is one of the slowest part of the processor.
-// But no need to optimize or pipeline because the result is not needed until at least 4 cycles.
+// But no need to optimize or pipeline because the result for a1-a3 is not needed until at least 4 cycles.
 // IR updated at the least one microinstruction earlier.
 // Just need to configure the timing analizer correctly.
+// isPriv, isIllegal might be needed as soon as two cycles later
+
 
 module uaddrDecode( 
 	input [15:0] opcode,
@@ -2346,15 +2348,15 @@ module busControl( input s_clks Clks, input enT1, input enT4,
 			rUDS <= 1'b1;
 			rLDS <= 1'b1;
 			rRWn <= 1'b1;
-			dataOe <= '0;
+			//dataOe <= '0;
 		end
 		else begin
-
+/*
 			if( Clks.enPhi2 & isWriteReg & (busPhase == S2))
 				dataOe <= 1'b1;
 			else if( Clks.enPhi1 & (busEnding | (busPhase == SIDLE)) )
 				dataOe <= 1'b0;
-						
+*/						
 			if( Clks.enPhi1 & busEnding)
 				rRWn <= 1'b1;
 			else if( Clks.enPhi1 & isWriteReg) begin
