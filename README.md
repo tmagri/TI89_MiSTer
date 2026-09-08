@@ -8,7 +8,7 @@ The core recreates the TI-89 Titanium (HW3) on the Terasic DE10-Nano board: a cy
 
 ## How this was built
 
-The RTL in this repository was written by an LLM working under human direction; all references listed below were used as part of the research. My contributions included research, architectural direction, and the use of existing software and hardware simulations to replicate the processes. Currently, research is focused on loading the image into memory to boot the OS. At this time, the project is not in a working state.
+The RTL in this repository was written by an LLM working under human direction; all references listed below were used as part of the research. My contributions included research, architectural direction, and the use of existing software and hardware simulations to replicate the processes. Currently, research is focused on loading the image into memory to boot the OS. At this time, the project is operation.
 
 This is stated upfront because it is fair for anyone evaluating the code to know. It is not an endorsement of the approach — draw your own conclusions.
 
