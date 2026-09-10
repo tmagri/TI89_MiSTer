@@ -249,6 +249,7 @@ module emu
 		"O6,Debug Overlay,Off,On;",
 		"O7,UART Status Line,Off,On;",
 		"O8,SDRAM Dump,Off,On;",
+		"O9,Keyboard Mode,Emulator,Native;",
 		"-;",
 		"R0,Reset;",
 		"V,v1.0;"
@@ -749,7 +750,8 @@ module emu
 		.col_data(kbd_col_data),
 		.on_key(on_key),
 		.on_key_press(on_key_press),
-		.kbd_int(kbd_int)
+		.kbd_int(kbd_int),
+		.native_mode(status[9])
 	);
 
 	///////////////////////////////////////////////////////////////////////////
