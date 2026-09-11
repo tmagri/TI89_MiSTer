@@ -91,14 +91,34 @@ module rom_loader (
 
     localparam [5:0]  SKIP_BYTES = 6'd53; // 0x3D - 8 ("basecode" already consumed)
 
-    localparam [2:0] S_IDLE  = 3'd0;
-    localparam [2:0] S_SCAN  = 3'd1;
-    localparam [2:0] S_FLUSH = 3'd2; // flush a dangling byte (sdram_wait aware)
-    localparam [2:0] S_FILL1 = 3'd3; // header + 0xFFFF into [0 .. 0x8FFF]
-    localparam [2:0] S_FILL2 = 3'd4; // 0xFFFF into [payload_end .. 0x1FFFFF]
-    localparam [2:0] S_DONE  = 3'd5;
+    localparam [3:0] S_IDLE  = 4'd0;
+    localparam [3:0] S_SCAN  = 4'd1;
+    localparam [3:0] S_FLUSH = 4'd2; // flush a dangling byte (sdram_wait aware)
+    localparam [3:0] S_FILL1 = 4'd3; // header + 0xFFFF into [0 .. 0x8FFF]
+    localparam [3:0] S_FILL2 = 4'd4; // 0xFFFF into [payload_end .. 0x1FFFFF]
+    localparam [3:0] S_PCERT = 4'd5; // cert block at 0x010000..0x01004E
+    localparam [3:0] S_PARC  = 4'd6; // 39 archive markers at 0x190000..0x3F0000
+    localparam [3:0] S_DONE  = 4'd7;
 
-    reg [2:0] state;
+    reg [3:0] state;
+
+    // AMS 3.10 Post-Install Cert Block (40 words at byte offset 0x010000, word offset 0x008000)
+    reg [15:0] cert_rom [0:39];
+    initial begin
+        cert_rom[ 0] = 16'hFFF8; cert_rom[ 1] = 16'h0000; cert_rom[ 2] = 16'h0326; cert_rom[ 3] = 16'h0904;
+        cert_rom[ 4] = 16'h1012; cert_rom[ 5] = 16'h5E31; cert_rom[ 6] = 16'h020D; cert_rom[ 7] = 16'h408B;
+        cert_rom[ 8] = 16'h1329; cert_rom[ 9] = 16'h1827; cert_rom[10] = 16'hB84D; cert_rom[11] = 16'hED1F;
+        cert_rom[12] = 16'hE30B; cert_rom[13] = 16'h7F28; cert_rom[14] = 16'h591B; cert_rom[15] = 16'h7970;
+        cert_rom[16] = 16'hE81B; cert_rom[17] = 16'h2294; cert_rom[18] = 16'h416C; cert_rom[19] = 16'hA9BB;
+        cert_rom[20] = 16'h4611; cert_rom[21] = 16'h62F6; cert_rom[22] = 16'h6D97; cert_rom[23] = 16'hD60F;
+        cert_rom[24] = 16'h3409; cert_rom[25] = 16'hC5C7; cert_rom[26] = 16'hAD53; cert_rom[27] = 16'h54CE;
+        cert_rom[28] = 16'h1992; cert_rom[29] = 16'h0CC2; cert_rom[30] = 16'hA52D; cert_rom[31] = 16'h7712;
+        cert_rom[32] = 16'h9A28; cert_rom[33] = 16'hE1F3; cert_rom[34] = 16'h0667; cert_rom[35] = 16'hA590;
+        cert_rom[36] = 16'hECC7; cert_rom[37] = 16'h4550; cert_rom[38] = 16'h915B; cert_rom[39] = 16'h4FFF;
+    end
+
+    reg [5:0] cert_idx;
+    reg [5:0] arc_idx;
 
     // =========================================================================
     // Payload-write skid buffer (see header). Depth 4 + the controller's
@@ -248,6 +268,8 @@ module rom_loader (
             fdiv        <= 3'd0;
             sk_wp       <= 3'd0;
             sk_rp       <= 3'd0;
+            cert_idx    <= 6'd0;
+            arc_idx     <= 6'd0;
         end else begin
             sdram_wr <= 1'b0;
 
@@ -273,6 +295,8 @@ module rom_loader (
                 mf          <= 1'b0;
                 skip        <= 6'd0;
                 pay         <= 1'b0;
+                cert_idx    <= 6'd0;
+                arc_idx     <= 6'd0;
                 hp          <= 1'b0;
                 waddr       <= PAYLOAD_START;
                 found       <= 1'b0;
@@ -411,9 +435,8 @@ module rom_loader (
                             if (fill_addr == HEAD_LAST) begin
                                 fill_addr <= fill_start;
                                 if (fill_start > FLASH_LAST) begin
-                                    state      <= S_DONE;
-                                    loading    <= 1'b0;
-                                    rom_loaded <= found;
+                                    cert_idx <= 6'd0;
+                                    state    <= S_PCERT;
                                 end else begin
                                     state <= S_FILL2;
                                 end
@@ -432,11 +455,48 @@ module rom_loader (
                             sdram_addr <= fill_addr;
                             sdram_dout <= 16'hFFFF;
                             if (fill_addr == FLASH_LAST) begin
+                                cert_idx <= 6'd0;
+                                state    <= S_PCERT;
+                            end else begin
+                                fill_addr <= fill_addr + 21'd1;
+                            end
+                        end
+                    end
+
+                    // -----------------------------------------------------
+                    // Pre-write 40-word post-install cert block at byte offset
+                    // 0x010000 (word offset 0x008000..0x008027, CPU $810000).
+                    S_PCERT: begin
+                        if (!sdram_wait) fdiv <= fdiv + 3'd1;
+                        if (fill_tick && !sdram_wait) begin
+                            sdram_wr   <= 1'b1;
+                            sdram_addr <= 21'h008000 + {15'd0, cert_idx};
+                            sdram_dout <= cert_rom[cert_idx];
+                            if (cert_idx == 6'd39) begin
+                                arc_idx <= 6'd0;
+                                state   <= S_PARC;
+                            end else begin
+                                cert_idx <= cert_idx + 6'd1;
+                            end
+                        end
+                    end
+
+                    // -----------------------------------------------------
+                    // Pre-write 39 archive sector allocation markers ($FFFE)
+                    // at byte offsets 0x190000, 0x1A0000, ..., 0x3F0000
+                    // (word offset 0x0C8000 + arc_idx * 0x008000, CPU $990000..$BF0000).
+                    S_PARC: begin
+                        if (!sdram_wait) fdiv <= fdiv + 3'd1;
+                        if (fill_tick && !sdram_wait) begin
+                            sdram_wr   <= 1'b1;
+                            sdram_addr <= 21'h0C8000 + {arc_idx, 15'd0};
+                            sdram_dout <= 16'hFFFE;
+                            if (arc_idx == 6'd38) begin
                                 state      <= S_DONE;
                                 loading    <= 1'b0;
                                 rom_loaded <= found;
                             end else begin
-                                fill_addr <= fill_addr + 21'd1;
+                                arc_idx <= arc_idx + 6'd1;
                             end
                         end
                     end

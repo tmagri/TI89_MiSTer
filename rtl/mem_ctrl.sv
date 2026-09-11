@@ -922,7 +922,14 @@ module mem_ctrl (
                         boot_ram_want  <= 1'b1;
                         boot_ram_we    <= 1'b1;   // write
                         boot_ram_addr  <= RAM_BASE + {7'd0, clr_idx, 1'b0};
-                        boot_ram_wdata <= 16'd0;
+                        case (clr_idx)
+                            17'h02DDA: boot_ram_wdata <= 16'h0000; // $005BB4 TimeZone = 0
+                            17'h02DDB: boot_ram_wdata <= 16'h0C01; // $005BB6 TimeFormat=12h, $005BB7 DateFormat=MDY
+                            17'h02DDC: boot_ram_wdata <= 16'h2AAA; // $005BB8 Magic upper
+                            17'h02DDD: boot_ram_wdata <= 16'hAAAA; // $005BBA Magic lower ($2AAAAAAA)
+                            17'h02DDF: boot_ram_wdata <= 16'h0001; // $005BBE ClockOn = 1
+                            default:   boot_ram_wdata <= 16'd0;
+                        endcase
                     end
                     if (boot_ram_done) begin
                         if (clr_idx == 17'd131071) begin

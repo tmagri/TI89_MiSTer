@@ -65,7 +65,10 @@ module io_ports (
     // AI7 arm bit: $600001 bit 2 (io_bit_tst(0x01, 2) in mem.c). While
     // set, any CPU write below $000120 raises level-7 autovector
     // ("vector table write protection & stack overflow").
-    output        prot_arm
+    output        prot_arm,
+
+    // Real-Time Clock interface (MiSTer HPS timestamp)
+    input  [32:0] timestamp
 );
 
     // =========================================================================
@@ -235,9 +238,22 @@ module io_ports (
     // sixteenths of a second in $710045. $71005F bit 0 enables the clock,
     // bit 1 = 0 (with bit 0 = 1) reloads the counter from $710040-$710044.
 
-    reg [31:0] rtc_seconds;
-    reg  [3:0] rtc_sixteenths;
-    reg [21:0] rtc_div;     // 60 MHz / 3,750,000 = 16 Hz sixteenth tick
+    // MiSTer HPS Timestamp translation:
+    // Unix epoch: 1970-01-01 00:00:00 UTC
+    // TI-89 epoch: 1997-01-01 00:00:00 (offset: 852,076,800 seconds = 32'd852076800)
+    wire        timestamp_valid = (timestamp[31:0] >= 32'd852076800);
+    wire [31:0] hps_ti_time     = timestamp[31:0] - 32'd852076800;
+
+    reg timestamp_q;
+    always @(posedge clk) begin
+        timestamp_q <= timestamp[32];
+    end
+    wire timestamp_updated = (timestamp[32] != timestamp_q) && timestamp_valid;
+
+    reg [31:0] rtc_seconds = 32'd0;
+    reg  [3:0] rtc_sixteenths = 4'd0;
+    reg [21:0] rtc_div = 22'd0;     // 60 MHz / 3,750,000 = 16 Hz sixteenth tick
+    reg        rtc_init_done = 1'b0;
 
     wire rtc_enabled = io3[8'h5F][0];
 
@@ -257,16 +273,25 @@ module io_ports (
         end
     end
 
-    // Single writer of rtc_seconds / rtc_sixteenths: either load the values
-    // staged in the loading registers, or free-run at 16 Hz while enabled.
+    // Single writer of rtc_seconds / rtc_sixteenths:
+    // Real RTC hardware is battery-backed and does NOT reset on CPU reset.
+    // Latch from HPS timestamp when uninitialized or on fresh sync,
+    // or reload staged values on rtc_load_strobe, or free-run at 16 Hz while enabled.
     always @(posedge clk) begin
-        if (reset) begin
-            rtc_div        <= 22'd0;
-            rtc_seconds    <= 32'd0;
+        if ((!rtc_init_done || rtc_seconds == 32'd0) && timestamp_valid) begin
+            rtc_seconds    <= hps_ti_time;
             rtc_sixteenths <= 4'd0;
+            rtc_div        <= 22'd0;
+            rtc_init_done  <= 1'b1;
         end else if (rtc_load_strobe) begin
-            rtc_seconds    <= {io3[8'h40], io3[8'h41],
-                               io3[8'h42], io3[8'h43]};
+            // Guard against AMS cold-boot wipe: if software tries to set factory-default 0
+            // when a valid HPS timestamp exists, retain/reload hps_ti_time instead of 0.
+            if ({io3[8'h40], io3[8'h41], io3[8'h42], io3[8'h43]} == 32'd0 && timestamp_valid) begin
+                rtc_seconds <= hps_ti_time;
+            end else begin
+                rtc_seconds <= {io3[8'h40], io3[8'h41],
+                                io3[8'h42], io3[8'h43]};
+            end
             rtc_sixteenths <= io3[8'h44][3:0];
             rtc_div        <= 22'd0;
         end else if (rtc_enabled) begin
@@ -348,6 +373,7 @@ module io_ports (
             // OS reads this back; leaving it 0 makes the OS believe the
             // protection hardware has failed.
             io2[8'h13] <= 8'h18;
+            io3[8'h5F] <= 8'h81;      // HW3 RTC present (bit 7) and enabled (bit 0)
 
             cpu_stop_pulse   <= 1'b0;
             ack_ai2_pulse    <= 1'b0;

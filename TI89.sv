@@ -264,6 +264,7 @@ module emu
 	wire  [10:0] ps2_key;
 	wire   [1:0] hps_buttons;
 	wire         sdram_b_wait;   // SDRAM loader-FIFO backpressure
+	wire  [32:0] timestamp;
 
 	// hps_io SD-card / image ports are unused: the OS image is a single
 	// file streamed through the ioctl interface.
@@ -376,7 +377,7 @@ module emu
 
 		.sdram_sz(),
 		.RTC(),
-		.TIMESTAMP(),
+		.TIMESTAMP(timestamp),
 		.uart_mode(),
 		.uart_speed(),
 
@@ -700,7 +701,8 @@ module emu
 		.ack_ai2(ack_ai2),
 		.ack_ai6(ack_ai6),
 		.timer_load(timer_load),
-		.prot_arm(prot_arm)
+		.prot_arm(prot_arm),
+		.timestamp(timestamp)
 	);
 
 	///////////////////////////////////////////////////////////////////////////
