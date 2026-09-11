@@ -17,11 +17,11 @@
 //
 // Two keyboard modes are supported:
 //
-//   Legacy Mode (native_mode = 0):
+//   Legacy (Mapped) Mode (native_mode = 0):
 //     Direct physical mapping. PC Shift -> TI SHIFT, PC Ctrl -> TI DIAMOND.
 //     Letters use ALPHA auto-assert with a reference counter.
 //
-//   Native Mode (native_mode = 1):
+//   Natural Mode (native_mode = 1):
 //     True Logical Translation (Reverse Mapping). PC Shift is decoupled
 //     from TI SHIFT and tracked internally in pc_shift_down. A comprehensive
 //     scancode decoder uses {ps2_ext, pc_shift_down, ps2_code} to determine
@@ -29,11 +29,16 @@
 //     Keys are routed through a 16-deep event FIFO and a non-blocking
 //     sequencer that injects simultaneous modifiers with proper timing.
 //
-// Manual Override Keys (Native Mode, bypass FIFO):
+// Manual Override Keys (Natural Mode, bypass FIFO):
 //   PC Left/Right Ctrl  -> TI DIAMOND (row 0, col 1)
 //   PC Left/Right Alt   -> TI 2ND     (row 0, col 3)
 //   PC Windows/GUI      -> TI SHIFT   (row 0, col 2)
 //   PC Caps Lock        -> TI ALPHA   (row 0, col 0)
+//
+// Numpad (Num Lock on): 0-9 . + - * / Enter map to their TI-89 equivalents.
+// With Num Lock off the numpad sends E0-prefixed codes and acts as the
+// cursor/navigation keys in the extended table above. The np_digits input
+// (OSD "Numpad Mode: Digits") re-decodes those E0 codes as keypad digits.
 //
 
 module keyboard (
@@ -55,7 +60,13 @@ module keyboard (
     output reg    kbd_int,      // Key state change (triggers AI2)
 
     // Native Keyboard Mode (from OSD status bit)
-    input         native_mode   // 0 = Legacy, 1 = Native (sequenced modifiers)
+    input         native_mode,  // 0 = Legacy, 1 = Native (sequenced modifiers)
+
+    // Numpad Digits Mode (from OSD status bit). MiSTer never sets the Num Lock
+    // LED on USB keyboards, so many numpads are stuck in cursor mode and send
+    // E0-prefixed navigation codes instead of digits. When asserted, those E0
+    // codes are decoded as keypad digits 1-9 (see extended table).
+    input         np_digits
 );
 
     // =========================================================================
@@ -69,7 +80,7 @@ module keyboard (
     reg [10:0] key_tracker [0:511]; // Stores {dec_req[3:0], dec_row[3:0], dec_col[2:0]}
 
     // =========================================================================
-    // PC Shift tracking (Native Mode: decoupled from TI SHIFT matrix key)
+    // PC Shift tracking (Natural Mode: decoupled from TI SHIFT matrix key)
     // =========================================================================
     reg pc_lshift;
     reg pc_rshift;
@@ -78,7 +89,7 @@ module keyboard (
     reg [4:0] alpha_count;   // Legacy Mode alpha reference counter
 
     // =========================================================================
-    // Native Mode: Event FIFO (16-deep circular buffer for N-key rollover)
+    // Natural Mode: Event FIFO (16-deep circular buffer for N-key rollover)
     // Entry format (14 bits):
     //   [13]    press       (1 = key press, 0 = key release)
     //   [12:9]  row         (4-bit TI matrix row)
@@ -105,7 +116,7 @@ module keyboard (
     wire [3:0]  fifo_req   = fifo_data[5:2];
 
     // =========================================================================
-    // Native Mode: Non-blocking sequencer state machine
+    // Natural Mode: Non-blocking sequencer state machine
     // =========================================================================
     localparam [2:0] ST_IDLE        = 3'd0;
     localparam [2:0] ST_MOD_WAIT    = 3'd1;
@@ -332,6 +343,24 @@ module keyboard (
                         8'h0D: begin dec_row = 4'd5; dec_col = 3'd6; dec_valid = 1'b1; end // Tab -> STORE
                         8'h0E: begin dec_row = 4'd1; dec_col = 3'd2; dec_valid = 1'b1; end // ` backtick -> POWER
 
+                        // Numpad (non-extended scancodes = Num Lock on; with Num
+                        // Lock off these arrive E0-prefixed and land in the
+                        // extended table as cursor/navigation keys instead)
+                        8'h70: begin dec_row=4'd4; dec_col=3'd7; dec_valid=1'b1; dec_req=4'd0; end // NP 0
+                        8'h69: begin dec_row=4'd4; dec_col=3'd6; dec_valid=1'b1; dec_req=4'd0; end // NP 1
+                        8'h72: begin dec_row=4'd3; dec_col=3'd6; dec_valid=1'b1; dec_req=4'd0; end // NP 2
+                        8'h7A: begin dec_row=4'd2; dec_col=3'd6; dec_valid=1'b1; dec_req=4'd0; end // NP 3
+                        8'h6B: begin dec_row=4'd4; dec_col=3'd5; dec_valid=1'b1; dec_req=4'd0; end // NP 4
+                        8'h73: begin dec_row=4'd3; dec_col=3'd5; dec_valid=1'b1; dec_req=4'd0; end // NP 5
+                        8'h74: begin dec_row=4'd2; dec_col=3'd5; dec_valid=1'b1; dec_req=4'd0; end // NP 6
+                        8'h6C: begin dec_row=4'd4; dec_col=3'd4; dec_valid=1'b1; dec_req=4'd0; end // NP 7
+                        8'h75: begin dec_row=4'd3; dec_col=3'd4; dec_valid=1'b1; dec_req=4'd0; end // NP 8
+                        8'h7D: begin dec_row=4'd2; dec_col=3'd4; dec_valid=1'b1; dec_req=4'd0; end // NP 9
+                        8'h71: begin dec_row=4'd3; dec_col=3'd7; dec_valid=1'b1; dec_req=4'd0; end // NP . -> PERIOD
+                        8'h79: begin dec_row=4'd1; dec_col=3'd6; dec_valid=1'b1; dec_req=4'd0; end // NP + -> PLUS
+                        8'h7B: begin dec_row=4'd1; dec_col=3'd5; dec_valid=1'b1; dec_req=4'd0; end // NP - -> MINUS
+                        8'h7C: begin dec_row=4'd1; dec_col=3'd4; dec_valid=1'b1; dec_req=4'd0; end // NP * -> MULTIPLY
+
                         // Function Keys
                         8'h05: begin dec_row = 4'd5; dec_col = 3'd0; dec_valid = 1'b1; end // F1
                         8'h06: begin dec_row = 4'd4; dec_col = 3'd0; dec_valid = 1'b1; end // F2
@@ -341,6 +370,31 @@ module keyboard (
                         8'h0B: begin dec_row = 4'd3; dec_col = 3'd1; dec_valid = 1'b1; end // F6 -> CATALOG
                         8'h83: begin dec_row = 4'd5; dec_col = 3'd1; dec_valid = 1'b1; end // F7 -> HOME
                         8'h0A: begin dec_row = 4'd4; dec_col = 3'd1; dec_valid = 1'b1; end // F8 -> MODE
+                        default: dec_valid = 1'b0;
+                    endcase
+                end else if (ps2_ext && np_digits && !dec_is_mod_override) begin
+                    // ==========================================================
+                    // EXTENDED SCANCODES - NUMPAD DIGITS MODE
+                    // With Num Lock off the numpad emits the cursor/navigation
+                    // codes below. Decode them as keypad digits 1-9 instead.
+                    // 0x70 (Insert/NP 0) stays the ON key and 0x71 (Delete/NP .)
+                    // stays CLEAR - they have no duplicate elsewhere, while
+                    // digits do (top number row).
+                    // ==========================================================
+                    case (ps2_code)
+                        8'h69: begin dec_row = 4'd4; dec_col = 3'd6; dec_valid = 1'b1; dec_req = 4'd0; end // NP 1
+                        8'h72: begin dec_row = 4'd3; dec_col = 3'd6; dec_valid = 1'b1; dec_req = 4'd0; end // NP 2
+                        8'h7A: begin dec_row = 4'd2; dec_col = 3'd6; dec_valid = 1'b1; dec_req = 4'd0; end // NP 3
+                        8'h6B: begin dec_row = 4'd4; dec_col = 3'd5; dec_valid = 1'b1; dec_req = 4'd0; end // NP 4
+                        8'h73: begin dec_row = 4'd3; dec_col = 3'd5; dec_valid = 1'b1; dec_req = 4'd0; end // NP 5
+                        8'h74: begin dec_row = 4'd2; dec_col = 3'd5; dec_valid = 1'b1; dec_req = 4'd0; end // NP 6
+                        8'h6C: begin dec_row = 4'd4; dec_col = 3'd4; dec_valid = 1'b1; dec_req = 4'd0; end // NP 7
+                        8'h75: begin dec_row = 4'd3; dec_col = 3'd4; dec_valid = 1'b1; dec_req = 4'd0; end // NP 8
+                        8'h7D: begin dec_row = 4'd2; dec_col = 3'd4; dec_valid = 1'b1; dec_req = 4'd0; end // NP 9
+                        8'h70: dec_is_on = 1'b1;                                                          // ON key
+                        8'h71: begin dec_row = 4'd1; dec_col = 3'd1; dec_valid = 1'b1; end                // CLEAR
+                        8'h4A: begin dec_row = 4'd1; dec_col = 3'd3; dec_valid = 1'b1; end                // NP / -> DIVIDE
+                        8'h5A: begin dec_row = 4'd1; dec_col = 3'd7; dec_valid = 1'b1; end                // NP Enter -> ENTER
                         default: dec_valid = 1'b0;
                     endcase
                 end else if (ps2_ext && !dec_is_mod_override) begin
@@ -359,6 +413,7 @@ module keyboard (
                         8'h7A: begin dec_row = 4'd5; dec_col = 3'd5; dec_valid = 1'b1; end // Page Down -> EE
                         8'h69: begin dec_row = 4'd3; dec_col = 3'd1; dec_valid = 1'b1; end // End -> CATALOG
                         8'h4A: begin dec_row = 4'd1; dec_col = 3'd3; dec_valid = 1'b1; end // Numpad / -> DIVIDE
+                        8'h5A: begin dec_row = 4'd1; dec_col = 3'd7; dec_valid = 1'b1; end // Numpad Enter -> ENTER
                         default: dec_valid = 1'b0;
                     endcase
                 end

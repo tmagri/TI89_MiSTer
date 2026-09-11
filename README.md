@@ -8,7 +8,7 @@ The core recreates the TI-89 Titanium (HW3) on the Terasic DE10-Nano board: a cy
 
 ## How this was built
 
-The RTL in this repository was written by an LLM working under human direction; all references listed below were used as part of the research. My contributions included research, architectural direction, and the use of existing software and hardware simulations to replicate the processes. Currently, research is focused on loading the image into memory to boot the OS. At this time, the project is operation.
+The RTL in this repository was written by an LLM working under human direction; all references listed below were used as part of the research. My contributions included research, architectural direction, and the use of existing software and hardware simulations to replicate the processes. Currently, research is focused on loading the OS image into memory and booting the OS from it.
 
 This is stated upfront because it is fair for anyone evaluating the code to know. It is not an endorsement of the approach — draw your own conclusions.
 
@@ -18,7 +18,7 @@ This is stated upfront because it is fair for anyone evaluating the code to know
 * RAM: 256 KB (mirrored at $000000 / $200000 / $400000, as on real HW3 hardware)
 * Flash: 4 MB window ($800000–$BFFFFF) backed by the DE10-Nano SDRAM, including the Sharp LH28F320BF Write State Machine behavior
 * LCD: 160×100 monochrome display with hardware DMA base-address logic, selectable color emulation (green / blue / amber / black & white) and integer scaling (1×–4×)
-* Keyboard: full TI-89 keypad mapped from a USB keyboard through the MiSTer I/O stack, with selectable **Emulator** (legacy) or **Native** (sequenced modifier injection with N-key rollover) keyboard modes
+* Keyboard: full TI-89 keypad mapped from a USB keyboard through the MiSTer I/O stack, with selectable **Mapped** (legacy) or **Natural** (sequenced modifier injection with N-key rollover) keyboard modes
 * Interrupts: HW2+ auto-interrupt sources (AI1 timer, AI2 keyboard, AI6 ON key, etc.)
 * OS loading: `.89u` OS upgrade files streamed from the SD card via the OSD
 
@@ -36,24 +36,89 @@ This is stated upfront because it is fair for anyone evaluating the code to know
 |---|---|---|
 | Load OS Image | `*.89u` | Streams the OS upgrade file into the flash window |
 | LCD Color | Green / Blue / Amber / B&W | Emulated LCD tint |
-| LCD Scale | 4× / 3× / 2× / 1× | Integer upscale of the 200×110 LCD raster |
-| Keyboard Mode | Emulator / Native | Emulator: legacy direct-matrix mapping. Native: sequenced modifier injection with N-key rollover |
+| LCD Scale | 4× / 3× / 2× / 1× | Integer upscale of the 160×100 LCD raster |
+| Keyboard Mode | Natural / Mapped | Natural (default): logical translation with sequenced modifier injection and N-key rollover. Mapped: legacy direct-matrix mapping (TiEmu-style) |
+| Numpad Mode | Cursor / Digits | Digits forces the numpad to type digits even when Num Lock is off (see [Keyboard](#keyboard)) |
 | Reset | — | Cold reset of the calculator |
 
-### Keyboard mapping
+### Keyboard
 
-| USB keyboard key | TI-89 key |
+Host keyboard input arrives as PS/2 scancodes through the MiSTer `hps_io` stack and is translated in `rtl/keyboard.sv` into the calculator's **10×8 key matrix** (layout taken from TiEmu's `kbd.c`), which the OS polls through the I/O registers at `$600018`–`$60001B`. The ON key is wired separately and triggers the AI6 interrupt directly; every other key press raises AI2.
+
+Two translation modes are available from the OSD (**Natural** is the default):
+
+| | **Natural mode** (default) | **Mapped mode** (legacy) |
+|---|---|---|
+| Philosophy | Type on a PC keyboard as if it were a TI-89 | Physical wiring of the PC keys onto the matrix |
+| PC Shift | Tracked internally; *not* wired to TI SHIFT | Wired directly to TI SHIFT (held = asserted) |
+| Modifiers for letters/symbols | Injected automatically per keystroke | ALPHA auto-asserted while a letter key is down; 2ND/♦ held by hand |
+| N-key rollover | Yes (16-event FIFO + sequencer) | No — overlapping keys can conflict |
+| Best for | Everyday typing and programming | Software that expects TiEmu-style timing |
+
+#### Modifier keys (both modes)
+
+| PC key | TI-89 key |
 |---|---|
 | Caps Lock | ALPHA |
-| Left Ctrl | ♦ (Diamond) |
-| Left Shift / Right Shift | SHIFT |
-| Left Alt / Right Alt | 2ND |
+| Left/Right Ctrl | ♦ (Diamond) |
+| Left/Right Alt | 2ND |
+| Left/Right Shift | SHIFT |
+| Windows/GUI key | SHIFT (Native mode) |
+
+In **Mapped mode** these write directly into the matrix and stay asserted exactly as long as they are held on the PC keyboard. In **Natural mode** Ctrl/Alt/Win/Caps Lock behave the same way (they bypass the sequencer), while PC Shift is *decoupled* from TI SHIFT and is only used to decide *what* each keystroke should produce — so holding Shift does not hold the TI SHIFT key down.
+
+#### Natural mode (default)
+
+Natural mode implements a logical translation pipeline in hardware (`rtl/keyboard.sv`):
+
+1. **Scancode decoder** — every PS/2 scancode is decoded — using the current PC Shift state — into a target matrix position plus a 4-bit *required modifier mask* `{ALPHA, SHIFT, 2ND, ♦}`. For example, `A` decodes to the `=` key requiring ALPHA; `Shift+A` decodes to `=` requiring ALPHA+SHIFT (uppercase); `Shift+8` decodes to the `×` key directly.
+2. **Key tracker** — the decoded assignment for each key currently held is remembered per-scancode, so a key *release* clears the same matrix cell it pressed, even if Shift state changed in between (this prevents stuck keys on Shift-release).
+3. **Event FIFO** — press/release events enter a 16-deep circular buffer, so nothing is dropped while the sequencer is busy (full N-key rollover at typing speed; auto-repeat is filtered).
+4. **Modifier sequencer** — a non-blocking state machine dequeues events and, when a key needs modifiers that are not currently asserted, presses them into the matrix first and waits **5 ms** so the OS scan loop observes them before the key itself. On release, modifiers are only removed after the last key that needed them is released — per-modifier reference counters make overlapping sequences (e.g. `Shift+A` followed immediately by `Shift+B`) work correctly.
+
+Because the decoder is scancode-complete, most of the PC keyboard "just works":
+
+* **Shifted symbols** produce the real TI-89 keystrokes: `!` `^` `*` `(` `)` `+` from the number row, `<`/`>` (2ND+`0` / 2ND+`.`), `[`/`]` (2ND+`,` / 2ND+`÷`), `∠` (2ND+EE) and `π` (2ND+`^`).
+* **Letters** produce lowercase (ALPHA + key) and **Shift+letter** produces uppercase (ALPHA+SHIFT+key); `T` `X` `Y` `Z` use their dedicated keys and only need SHIFT when capitalized.
+* **Space** inserts a space (ALPHA+(−)); **Shift+Space** or the **`-`** key gives the negate/(−) key, and **Shift+`-`** gives the binary minus operator.
+
+#### Mapped mode (legacy)
+
+Mapped mode mirrors the behavior of the TiEmu software emulator: modifier keys are mapped directly onto the keyboard matrix and remain asserted for as long as they are held on the PC keyboard, and letter keys (`A`–`W`) auto-assert ALPHA with a reference counter while pressed. This works well for single-key input but does not support N-key rollover — pressing a second alpha key while one is already down can mis-track the shared ALPHA assertion. Use it for software that expects TiEmu-style timing, or if you prefer to press 2ND/♦/ALPHA by hand exactly like on the calculator.
+
+#### Key mapping
+
+The table below applies to both modes unless noted. In Natural mode the *character* you type is what matters; in Mapped mode the *physical PC key* maps to the listed TI key.
+
+**Modifiers, control and system keys**
+
+| PC key | TI-89 key |
+|---|---|
+| Caps Lock | ALPHA (hold like on the calculator) |
+| Left/Right Ctrl | ♦ (Diamond) |
+| Left/Right Alt | 2ND |
+| Left/Right Shift | SHIFT (Mapped mode) / logical shift (Natural mode) |
+| Windows/GUI key | SHIFT (Natural mode) |
 | F1–F5 | F1–F5 |
 | F6 / End | CATALOG |
 | F7 / Home | HOME |
 | F8 | MODE |
-| 0–9 (top row or numpad) | 0–9 |
-| X / Y / Z / T | X / Y / Z / T (dedicated keys — no ALPHA needed) |
+| Page Up | APPS |
+| Page Down | EE |
+| Arrow keys | Cursor pad |
+| Insert | ON (power) |
+| Delete | CLEAR |
+| Backspace | BACKSPACE (⌫) |
+| Enter | ENTER |
+| ESC | ESC |
+| Tab | STO→ |
+
+**Typing keys**
+
+| PC key | TI-89 key |
+|---|---|
+| 0–9 (top row) | 0–9 |
+| T / X / Y / Z | T / X / Y / Z (dedicated keys — no ALPHA needed) |
 | A | ALPHA + = |
 | B | ALPHA + ( |
 | C | ALPHA + ) |
@@ -76,38 +141,27 @@ This is stated upfront because it is fair for anyone evaluating the code to know
 | U | ALPHA + + |
 | V | ALPHA + 0 |
 | W | ALPHA + . |
-| Enter | ENTER |
-| Backspace | BACKSPACE |
-| ESC | ESC |
-| Space | (−) NEGATE |
-| Tab | STO→ |
-| ` ` ` | ^ (power) |
-| = | = |
-| `[` / `]` | ( / ) |
-| , and . | , and . |
-| \ | \| (pipe) |
-| Arrow keys | Cursor pad |
+| `,` / `.` | , / . (Shift+`,` = `<`, Shift+`.` = `>` in Natural mode) |
+| `/` | ÷ |
+| `\` | \| (pipe) |
+| `=` | = (Shift+= = + in Natural mode) |
+| `` ` `` (backtick) | ^ (power) |
+| `[` / `]` | ( / ) in Mapped mode; `[` / `]` via 2ND in Natural mode |
+| `-` | − (minus) in Mapped mode; (−) negate in Natural mode (Shift+`-` = −) |
+| `'` (apostrophe) | + (plus) in Mapped mode; 2ND sequence in Natural mode |
+| Space | (−) negate in Mapped mode; space in Natural mode (Shift+Space = (−)) |
+| `;` | 9 in Mapped mode; `:` (2ND+9) in Natural mode |
+| Numpad 0–9 | 0–9 |
+| Numpad `.` | . |
 | Numpad `+` `−` `*` `/` | + − × ÷ |
-| `-` | − (minus) |
-| `'` (apostrophe) | + (plus) — Mac / no-numpad alternative |
-| `/` (slash) | ÷ (divide) — Mac / no-numpad alternative |
-| Delete | CLEAR |
-| Insert | ON |
-| Page Up | APPS |
-| Page Down | EE |
+| Numpad Enter | ENTER |
 
-#### Keyboard modes
+**Numpad and Num Lock.** The numpad tables above apply when the keyboard's Num Lock is on. Num Lock is tracked by the *host* via LED state, and MiSTer never sets it — so many USB keyboards stay in cursor mode permanently, and the numpad then sends navigation codes (arrows, Home/End, Page Up/Down, Delete, Insert) instead of digits, with `/` being the only key that works as expected. If that happens:
 
-**Emulator mode** (default) mirrors the behavior of the TiEmu software emulator: modifier keys (ALPHA, 2ND, ♦) are mapped directly to the keyboard matrix and remain asserted for the duration they are held on the PC keyboard. Alpha letters are mapped to their shifted key equivalents (e.g., `A` → ALPHA + `=`). This works well for single-key input but does not support N-key rollover — pressing multiple alpha keys simultaneously while holding ALPHA will only register the first key.
+* Try pressing **Num Lock** — some keyboards toggle it themselves.
+* Otherwise, set the OSD option **Numpad Mode → Digits**. The core then decodes those navigation codes as keypad digits 1–9 (the main arrow keys are also affected and will type digits). Numpad `0` remains the ON key and numpad `.` remains CLEAR in this mode, since those have no duplicate on the PC keyboard, while digits do (top number row).
 
-**Native mode** implements a hardware sequencer that mimics the TI-89's native keyboard behavior:
-
-* Alpha letters are routed through a 16-deep event FIFO and a 6-state sequencer that injects the ALPHA modifier with a ~5 ms delay before asserting the target key, matching the timing the TI-89 OS expects.
-* Per-modifier reference counters (ALPHA, 2ND, ♦) track how many keys are currently using each modifier, allowing multiple keys to be pressed simultaneously with independent modifier lifecycle management.
-* A PS/2 auto-repeat filter prevents redundant key events from flooding the FIFO or inflating modifier counters.
-* The sequencer is non-blocking: after asserting a key it returns to idle to drain the FIFO, enabling N-key rollover.
-
-Use **Emulator** mode for compatibility with software that expects the legacy timing, or **Native** mode for more realistic hardware behavior with better multi-key support.
+Any PC key not listed here is currently unmapped and produces no keystroke.
 
 ## Building from source
 

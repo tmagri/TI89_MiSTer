@@ -283,6 +283,10 @@ module io_ports (
             rtc_sixteenths <= 4'd0;
             rtc_div        <= 22'd0;
             rtc_init_done  <= 1'b1;
+        end else if (timestamp_updated) begin
+            rtc_seconds    <= hps_ti_time;
+            rtc_sixteenths <= 4'd0;
+            rtc_div        <= 22'd0;
         end else if (rtc_load_strobe) begin
             // Guard against AMS cold-boot wipe: if software tries to set factory-default 0
             // when a valid HPS timestamp exists, retain/reload hps_ti_time instead of 0.

@@ -68,8 +68,8 @@ module sdram (
     output reg [15:0] a_rdata,
     output reg    a_ready,     // One-cycle completion pulse
 
-    // Port B: OS loader writes (word address)
-    input  [20:0] b_addr,
+    // Port B: OS loader / RAM restore writes (word address)
+    input  [23:0] b_addr,
     input  [15:0] b_wdata,
     input         b_wr,
     output        b_wait,      // FIFO almost full
@@ -137,7 +137,7 @@ module sdram (
     reg         pa_uds_n, pa_lds_n;
 
     // Port B write FIFO (8 entries)
-    reg  [20:0] fifo_addr [0:7];
+    reg  [23:0] fifo_addr [0:7];
     reg  [15:0] fifo_data [0:7];
     reg  [3:0]  fifo_wptr, fifo_rptr;
     wire [3:0]  fifo_count = fifo_wptr - fifo_rptr;
@@ -255,8 +255,8 @@ module sdram (
                     pa_valid <= 1'b0;
                     state    <= STATE_START;
                 end else if (!fifo_empty) begin
-                    // Port B (OS loader, full-word writes)
-                    waddr     <= {3'b0, fifo_addr[fifo_rptr[2:0]]};
+                    // Port B (OS loader / RAM restore, full-word writes)
+                    waddr     <= fifo_addr[fifo_rptr[2:0]];
                     data      <= fifo_data[fifo_rptr[2:0]];
                     we        <= 1'b1;
                     dqm       <= 2'b00;

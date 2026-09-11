@@ -160,7 +160,24 @@ module mem_ctrl (
     input             cmd_wr,       // 1 = pattern-write command (RAM only)
     input      [23:0] cmd_start,    // byte offset (even)
     input      [23:0] cmd_len,      // byte length (even, nonzero)
-    output reg        dump_cmd_mode
+    output reg        dump_cmd_mode,
+
+    // ---- RAM save read port (ram_save.sv, lowest priority) ----
+    // ram_save asserts save_req and holds save_addr stable; the arbiter
+    // issues one SDRAM read and pulses save_ack with save_rdata valid.
+    input             save_req,     // request one RAM read word
+    input      [16:0] save_addr,    // word index within 256 KB RAM
+    output reg [15:0] save_rdata,   // result word (valid when save_ack)
+    output reg        save_ack,     // one-cycle completion pulse
+
+    // RAM dirty pulse (asserted for 1 cycle when CPU completes a write to RAM)
+    output reg        ram_write_pulse,
+
+    // High while ram_save is restoring the .sav into RAM (holds the boot
+    // FSM off the RAM; a completed restore also skips B_CLEAR/B_COPY —
+    // the restored RAM already contains a valid vector page, and wiping
+    // or header-copying it would destroy the restored state).
+    input             rst_pending
 );
 
     // =========================================================================
@@ -178,6 +195,7 @@ module mem_ctrl (
     localparam [1:0] SRC_LCD  = 2'd0;
     localparam [1:0] SRC_CPU  = 2'd1;
     localparam [1:0] SRC_BOOT = 2'd2;
+    localparam [1:0] SRC_SAVE = 2'd3;
 
     reg [1:0] grant;
 
@@ -260,6 +278,8 @@ module mem_ctrl (
     wire ram_load_cpu  = !ram_valid && !lcd_pend && cpu_ram_want;
     wire ram_load_boot = !ram_valid && !lcd_pend && !cpu_ram_want &&
                          boot_ram_want;
+    wire ram_load_save = !ram_valid && !lcd_pend && !cpu_ram_want &&
+                         !boot_ram_want && save_req;
 
     always @(posedge clk) begin
         if (reset) begin
@@ -315,6 +335,15 @@ module mem_ctrl (
                     ram_wdata <= boot_ram_wdata;
                     ram_uds_n <= 1'b0;
                     ram_lds_n <= 1'b0;
+                end else if (save_req) begin
+                    // Lowest priority: RAM save read (ram_save.sv)
+                    ram_valid <= 1'b1;
+                    ram_src   <= SRC_SAVE;
+                    ram_wr    <= 1'b0;   // always a read
+                    ram_addr  <= RAM_BASE + {7'd0, save_addr, 1'b0};
+                    ram_wdata <= 16'd0;
+                    ram_uds_n <= 1'b0;
+                    ram_lds_n <= 1'b0;
                 end
             end
         end
@@ -342,6 +371,9 @@ module mem_ctrl (
             cpu_ram_done <= 1'b0;
             boot_ram_done<= 1'b0;
             dump_rd_data <= 16'd0;
+            save_rdata   <= 16'd0;
+            save_ack     <= 1'b0;
+            ram_write_pulse <= 1'b0;
         end else begin
             sd_rd         <= 1'b0;
             sd_wr         <= 1'b0;
@@ -349,6 +381,8 @@ module mem_ctrl (
             lcd_ram_ack   <= 1'b0;
             cpu_ram_done  <= 1'b0;
             boot_ram_done <= 1'b0;
+            save_ack      <= 1'b0;
+            ram_write_pulse <= 1'b0;
 
             case (grant)
                 G_NONE: begin
@@ -387,13 +421,20 @@ module mem_ctrl (
                                 lcd_ram_data <= sd_rdata;
                                 lcd_ram_ack  <= 1'b1;
                             end
-                            SRC_CPU:  cpu_ram_done  <= 1'b1;
+                            SRC_CPU: begin
+                                cpu_ram_done <= 1'b1;
+                                if (ram_wr) ram_write_pulse <= 1'b1;
+                            end
                             SRC_BOOT: begin
                                 // Dump reads latch their word here; the
                                 // boot FSM's done pulse covers writes too.
                                 if (!ram_wr)
                                     dump_rd_data <= sd_rdata;
                                 boot_ram_done <= 1'b1;
+                            end
+                            SRC_SAVE: begin
+                                save_rdata <= sd_rdata;
+                                save_ack   <= 1'b1;
                             end
                         endcase
                         grant <= G_NONE;
@@ -468,6 +509,7 @@ module mem_ctrl (
     reg [3:0]  boot_state;
     reg [16:0] clr_idx;    // RAM clear index  (0..131071)
     reg [6:0]  boot_idx;   // Header word index (0..127)
+    reg        restore_happened; // a .sav restore ran since last image load
 
     // Command dump (host 'D' command): range + progress
     reg        cmd_mem_r;      // 0 = flash image, 1 = calc RAM
@@ -837,6 +879,7 @@ module mem_ctrl (
         if (reset || !rom_loaded) begin
             boot_state      <= B_WAIT;
             boot_done       <= 1'b0;
+            restore_happened <= 1'b0;
             clr_idx         <= 17'd0;
             boot_idx        <= 7'd0;
             boot_ram_want   <= 1'b0;
@@ -867,8 +910,15 @@ module mem_ctrl (
 
             case (boot_state)
                 B_WAIT: begin
-                    if (init_done)
-                        boot_state <= dump_en ? B_DPASS : B_CLEAR;
+                    // Hold off while ram_save is restoring the .sav (and
+                    // note that it did). When the restore finishes, skip
+                    // the RAM clear and header copy: the restored RAM is
+                    // the boot state (battery-backup semantics).
+                    if (rst_pending)
+                        restore_happened <= 1'b1;
+                    if (init_done && !rst_pending)
+                        boot_state <= restore_happened ? B_DONE :
+                                      (dump_en ? B_DPASS : B_CLEAR);
                 end
 
                 B_DPASS: begin

@@ -242,14 +242,21 @@ module emu
 
 	localparam CONF_STR = {
 		"TI89;;",
-		"F0,89u,Load OS Image;",
+		"FS0,89u,Load OS Image;",
 		"-;",
+`ifndef BK_SAVE_DISABLE
+		"O[13],Autosave,Off,On;",
+		"H0R[16],Load Backup RAM;",
+		"H0R[17],Save Backup RAM;",
+		"-;",
+`endif
 		"O[3:2],LCD Color,Green,Blue,Amber,B&W;",
 		"O[5:4],LCD Scale,4x,3x,2x,1x;",
 		"O6,Debug Overlay,Off,On;",
 		"O7,UART Status Line,Off,On;",
 		"O8,SDRAM Dump,Off,On;",
-		"O9,Keyboard Mode,Emulator,Native;",
+		"O9,Keyboard Mode,Natural,Mapped;",
+		"O10,Numpad Mode,Cursor,Digits;",
 		"-;",
 		"R0,Reset;",
 		"V,v1.0;"
@@ -266,14 +273,20 @@ module emu
 	wire         sdram_b_wait;   // SDRAM loader-FIFO backpressure
 	wire  [32:0] timestamp;
 
-	// hps_io SD-card / image ports are unused: the OS image is a single
-	// file streamed through the ioctl interface.
-	wire [31:0] sd_lba[1];
-	wire  [5:0] sd_blk_cnt[1];
-	wire [15:0] sd_buff_din[1];
-	assign sd_lba[0]      = 32'd0;
-	assign sd_blk_cnt[0]  = 6'd0;
-	assign sd_buff_din[0] = 16'd0;
+	// MiSTer standard Backup RAM (secondary SD / block device) interface
+	wire [31:0] bk_sd_lba;
+	wire  [5:0] bk_sd_blk_cnt;
+	wire        bk_sd_rd;
+	wire        bk_sd_wr;
+	wire        bk_sd_ack;
+	wire  [7:0] bk_sd_buff_addr;
+	wire [15:0] bk_sd_buff_dout;
+	wire [15:0] bk_sd_buff_din;
+	wire        bk_sd_buff_wr;
+	wire        img_mounted;
+	wire        img_readonly;
+	wire [63:0] img_size;
+	wire        bk_ena;
 
 	hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(1)) hps_io
 	(
@@ -342,25 +355,25 @@ module emu
 		.status(status),
 		.status_in(128'd0),
 		.status_set(1'b0),
-		.status_menumask(16'd0),
+		.status_menumask({15'd0, ~bk_ena}),
 
 		.info_req(1'b0),
 		.info(8'd0),
 
-		.img_mounted(),
-		.img_readonly(),
-		.img_size(),
+		.img_mounted(img_mounted),
+		.img_readonly(img_readonly),
+		.img_size(img_size),
 
-		.sd_lba(sd_lba),
-		.sd_blk_cnt(sd_blk_cnt),
-		.sd_rd(1'b0),
-		.sd_wr(1'b0),
-		.sd_ack(),
+		.sd_lba('{bk_sd_lba}),
+		.sd_blk_cnt('{bk_sd_blk_cnt}),
+		.sd_rd(bk_sd_rd),
+		.sd_wr(bk_sd_wr),
+		.sd_ack(bk_sd_ack),
 
-		.sd_buff_addr(),
-		.sd_buff_dout(),
-		.sd_buff_din(sd_buff_din),
-		.sd_buff_wr(),
+		.sd_buff_addr(bk_sd_buff_addr),
+		.sd_buff_dout(bk_sd_buff_dout),
+		.sd_buff_din('{bk_sd_buff_din}),
+		.sd_buff_wr(bk_sd_buff_wr),
 
 		.ioctl_download(ioctl_download),
 		.ioctl_index(ioctl_index),
@@ -413,6 +426,16 @@ module emu
 		.loading(loading)
 	);
 
+	wire        sav_b_wr;
+	wire [23:0] sav_b_addr;
+	wire [15:0] sav_b_wdata;
+	wire        sav_rst_req;
+	wire [15:0] mc_save_rdata;
+	wire        mc_save_ack;
+	wire        sav_req_o;
+	wire [16:0] sav_addr_o;
+	wire        ram_write_pulse;
+
 	///////////////////////////////////////////////////////////////////////////
 	// SDRAM (backs the 4MB flash window and the 256KB calculator RAM)
 	///////////////////////////////////////////////////////////////////////////
@@ -460,9 +483,9 @@ module emu
 		.a_rdata(sd_rdata),
 		.a_ready(sd_ready),
 
-		.b_addr(ld_addr),
-		.b_wdata(ld_dout),
-		.b_wr(ld_wr),
+		.b_addr(sav_rst_req ? sav_b_addr : {3'd0, ld_addr}),
+		.b_wdata(sav_rst_req ? sav_b_wdata : ld_dout),
+		.b_wr(sav_rst_req ? sav_b_wr : ld_wr),
 		.b_wait(sdram_b_wait),
 
 		.init_done(sdram_init_done)
@@ -628,8 +651,78 @@ module emu
 		.cmd_wr(dbg_cmd_wr),
 		.cmd_start(dbg_cmd_start),
 		.cmd_len(dbg_cmd_len),
-		.dump_cmd_mode(dump_cmd_mode)
+		.dump_cmd_mode(dump_cmd_mode),
+
+		.save_req(sav_req_o),
+		.save_addr(sav_addr_o),
+		.save_rdata(mc_save_rdata),
+		.save_ack(mc_save_ack),
+		.ram_write_pulse(ram_write_pulse),
+		.rst_pending(sav_rst_req)
 	);
+
+	///////////////////////////////////////////////////////////////////////////
+	// RAM save/restore (.sav battery-backed RAM equivalent)
+	///////////////////////////////////////////////////////////////////////////
+
+`ifndef BK_SAVE_DISABLE
+	ram_save ram_save
+	(
+		.clk(clk_sys),
+		.reset(reset),
+
+		.img_mounted(img_mounted),
+		.img_readonly(img_readonly),
+		.img_size(img_size),
+		.sd_lba(bk_sd_lba),
+		.sd_blk_cnt(bk_sd_blk_cnt),
+		.sd_rd(bk_sd_rd),
+		.sd_wr(bk_sd_wr),
+		.sd_ack(bk_sd_ack),
+		.sd_buff_addr(bk_sd_buff_addr),
+		.sd_buff_dout(bk_sd_buff_dout),
+		.sd_buff_din(bk_sd_buff_din),
+		.sd_buff_wr(bk_sd_buff_wr),
+
+		.bk_load(status[16]),
+		.bk_save(status[17]),
+		.autosave_en(status[13]),
+		.osd_status(OSD_STATUS),
+		.downloading(loading),
+		.ram_write_pulse(ram_write_pulse),
+		.bk_ena(bk_ena),
+
+		.b_addr(sav_b_addr),
+		.b_wdata(sav_b_wdata),
+		.b_wr(sav_b_wr),
+		.b_wait(sdram_b_wait),
+
+		.save_req(sav_req_o),
+		.save_addr(sav_addr_o),
+		.save_rdata(mc_save_rdata),
+		.save_ack(mc_save_ack),
+
+		.rst_req(sav_rst_req)
+	);
+`else
+	// ---- Backup RAM save/restore compiled out (release build) ----
+	// The SDRAM port-B mux, mem_ctrl save port and cpu_reset stay wired
+	// but see constant zeros, so the core behaves exactly as before the
+	// backup-RAM feature: no restore on load, no OSD entries.
+	assign bk_ena      = 1'b0;   // hides the (already removed) OSD entries
+	assign sav_rst_req = 1'b0;
+	assign sav_b_addr  = 24'd0;
+	assign sav_b_wdata = 16'd0;
+	assign sav_b_wr    = 1'b0;
+	assign sav_req_o   = 1'b0;
+	assign sav_addr_o  = 17'd0;
+	// hps_io block-device request lines (inputs to hps_io) need drivers
+	assign bk_sd_lba      = 32'd0;
+	assign bk_sd_blk_cnt  = 6'd0;
+	assign bk_sd_rd       = 1'b0;
+	assign bk_sd_wr       = 1'b0;
+	assign bk_sd_buff_din = 16'd0;
+`endif
 
 	///////////////////////////////////////////////////////////////////////////
 	// Reset sources
@@ -641,7 +734,7 @@ module emu
 	// copied the OS header to $000000.
 
 	wire core_reset = reset | status[0] | hps_buttons[1];
-	wire cpu_reset  = core_reset | ~boot_done;
+	wire cpu_reset  = core_reset | ~boot_done | sav_rst_req;
 
 	///////////////////////////////////////////////////////////////////////////
 	// I/O ports ($600000 / $700000 / $710000)
@@ -753,7 +846,8 @@ module emu
 		.on_key(on_key),
 		.on_key_press(on_key_press),
 		.kbd_int(kbd_int),
-		.native_mode(status[9])
+		.native_mode(~status[9]),
+		.np_digits(status[10])
 	);
 
 	///////////////////////////////////////////////////////////////////////////
