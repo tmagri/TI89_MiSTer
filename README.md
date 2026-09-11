@@ -18,7 +18,7 @@ This is stated upfront because it is fair for anyone evaluating the code to know
 * RAM: 256 KB (mirrored at $000000 / $200000 / $400000, as on real HW3 hardware)
 * Flash: 4 MB window ($800000–$BFFFFF) backed by the DE10-Nano SDRAM, including the Sharp LH28F320BF Write State Machine behavior
 * LCD: 160×100 monochrome display with hardware DMA base-address logic, selectable color emulation (green / blue / amber / black & white) and integer scaling (1×–4×)
-* Keyboard: full TI-89 keypad mapped from a USB keyboard through the MiSTer I/O stack
+* Keyboard: full TI-89 keypad mapped from a USB keyboard through the MiSTer I/O stack, with selectable **Emulator** (legacy) or **Native** (sequenced modifier injection with N-key rollover) keyboard modes
 * Interrupts: HW2+ auto-interrupt sources (AI1 timer, AI2 keyboard, AI6 ON key, etc.)
 * OS loading: `.89u` OS upgrade files streamed from the SD card via the OSD
 
@@ -37,6 +37,7 @@ This is stated upfront because it is fair for anyone evaluating the code to know
 | Load OS Image | `*.89u` | Streams the OS upgrade file into the flash window |
 | LCD Color | Green / Blue / Amber / B&W | Emulated LCD tint |
 | LCD Scale | 4× / 3× / 2× / 1× | Integer upscale of the 200×110 LCD raster |
+| Keyboard Mode | Emulator / Native | Emulator: legacy direct-matrix mapping. Native: sequenced modifier injection with N-key rollover |
 | Reset | — | Cold reset of the calculator |
 
 ### Keyboard mapping
@@ -95,6 +96,19 @@ This is stated upfront because it is fair for anyone evaluating the code to know
 | Page Up | APPS |
 | Page Down | EE |
 
+#### Keyboard modes
+
+**Emulator mode** (default) mirrors the behavior of the TiEmu software emulator: modifier keys (ALPHA, 2ND, ♦) are mapped directly to the keyboard matrix and remain asserted for the duration they are held on the PC keyboard. Alpha letters are mapped to their shifted key equivalents (e.g., `A` → ALPHA + `=`). This works well for single-key input but does not support N-key rollover — pressing multiple alpha keys simultaneously while holding ALPHA will only register the first key.
+
+**Native mode** implements a hardware sequencer that mimics the TI-89's native keyboard behavior:
+
+* Alpha letters are routed through a 16-deep event FIFO and a 6-state sequencer that injects the ALPHA modifier with a ~5 ms delay before asserting the target key, matching the timing the TI-89 OS expects.
+* Per-modifier reference counters (ALPHA, 2ND, ♦) track how many keys are currently using each modifier, allowing multiple keys to be pressed simultaneously with independent modifier lifecycle management.
+* A PS/2 auto-repeat filter prevents redundant key events from flooding the FIFO or inflating modifier counters.
+* The sequencer is non-blocking: after asserting a key it returns to idle to drain the FIFO, enabling N-key rollover.
+
+Use **Emulator** mode for compatibility with software that expects the legacy timing, or **Native** mode for more realistic hardware behavior with better multi-key support.
+
 ## Building from source
 
 **Toolchain:** Intel/Altera **Quartus Prime Lite 17.0.x** (the project was created with 17.0.0 Lite Edition; the MiSTer `sys/` framework targets that toolchain). Target device is the DE10-Nano's Cyclone V `5CSEBA6U23I7`.
@@ -125,7 +139,7 @@ rtl/                Core RTL
   flash_ctrl.sv       Sharp WSM flash write state machine
   io_ports.sv         Memory-mapped I/O banks 1–3 ($600000/$700000/$710000)
   timer_int.sv        HW2+ auto-interrupt / timer logic
-  keyboard.sv         10×8 keyboard matrix + PS/2 scancode mapping
+  keyboard.sv         10×8 keyboard matrix, PS/2 scancode mapping, Native Mode sequencer (FIFO + modifier injection)
   lcd_ctrl.sv         LCD DMA controller
   video_scaler.sv     LCD raster integer scaler for the MiSTer video path
   fx68k/              FX68K 68000 CPU core (GPLv3, Jorge Cwik) — see LICENSE
@@ -167,7 +181,7 @@ The `references/` directory is excluded from git (see `.gitignore`). If you want
 | TI-89 JavaScript simulator (emu68k fork) | <https://tiplanet.org/emu68k_fork/> / Patrick Davidson's original | GPL | Timer/interrupt model, flash WSM word model |
 | z80ti-fpga | <https://github.com/hellux/z80ti-fpga> | GPLv3 | FPGA calculator design reference |
 | MacPlus-MiSTer | <https://github.com/MiSTer-devel/MacPlus_MiSTer> | GPLv3 | SDRAM design reference |
-| MegaDri e-MiSTer | <https://github.com/MiSTer-devel/MegaDrive_MiSTer> | GPLv3 | SDRAM design reference |
+| MegaDrive-MiSTer | <https://github.com/MiSTer-devel/MegaDrive_MiSTer> | GPLv3 | SDRAM design reference |
 
 None of this reference code is compiled into the bitstream; only the components in the table above are.
 
