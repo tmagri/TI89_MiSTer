@@ -435,6 +435,12 @@ module emu
 	wire        sav_req_o;
 	wire [16:0] sav_addr_o;
 	wire        ram_write_pulse;
+	wire [2:0]  sav_dbg_state;
+	wire [8:0]  sav_dbg_sector;
+	wire [7:0]  sav_dbg_word;
+	wire [5:0]  sav_dbg_flags;
+	wire [7:0]  sav_dbg_ack;
+	wire [7:0]  sav_dbg_rj;
 
 	///////////////////////////////////////////////////////////////////////////
 	// SDRAM (backs the 4MB flash window and the 256KB calculator RAM)
@@ -702,7 +708,14 @@ module emu
 		.save_rdata(mc_save_rdata),
 		.save_ack(mc_save_ack),
 
-		.rst_req(sav_rst_req)
+		.rst_req(sav_rst_req),
+
+		.dbg_state(sav_dbg_state),
+		.dbg_sector(sav_dbg_sector),
+		.dbg_word(sav_dbg_word),
+		.dbg_flags(sav_dbg_flags),
+		.dbg_ack_cnt(sav_dbg_ack),
+		.dbg_rj_cnt(sav_dbg_rj)
 	);
 `else
 	// ---- Backup RAM save/restore compiled out (release build) ----
@@ -722,6 +735,13 @@ module emu
 	assign bk_sd_rd       = 1'b0;
 	assign bk_sd_wr       = 1'b0;
 	assign bk_sd_buff_din = 16'd0;
+	// UART diagnostics read zeros when the feature is compiled out
+	assign sav_dbg_state  = 3'd0;
+	assign sav_dbg_sector = 9'd0;
+	assign sav_dbg_word   = 8'd0;
+	assign sav_dbg_flags  = 6'd0;
+	assign sav_dbg_ack    = 8'd0;
+	assign sav_dbg_rj     = 8'd0;
 `endif
 
 	///////////////////////////////////////////////////////////////////////////
@@ -895,7 +915,11 @@ module emu
 	wire wake = int_pend[7] | int_pend[6] | (|(int_pend[5:1] & stop_mask));
 
 	always @(posedge clk_sys) begin
-		if (core_reset || !boot_done)
+		// cpu_reset must clear STOP too: sav_rst_req pulses cpu_reset while
+		// ram_save restores the .sav, and if the OS was idling in STOP the
+		// stale flag would hold cpu_halt asserted after the reset releases,
+		// gating the 68k clock forever (frozen PC, dead LCD, white screen).
+		if (core_reset || !boot_done || cpu_reset)
 			stopped <= 1'b0;
 		else if (cpu_stop)
 			stopped <= 1'b1;
@@ -1079,6 +1103,12 @@ module emu
 		.rxd(dbg_rx),
 		.boot_done(boot_done),
 		.status_mute(~status[7]),
+		.sv_state(sav_dbg_state),
+		.sv_sector(sav_dbg_sector),
+		.sv_word(sav_dbg_word),
+		.sv_flags(sav_dbg_flags),
+		.sv_ack(sav_dbg_ack),
+		.sv_rj(sav_dbg_rj),
 		.cmd_req(dbg_cmd_req),
 		.cmd_wr(dbg_cmd_wr),
 		.cmd_mem(dbg_cmd_mem),

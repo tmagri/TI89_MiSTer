@@ -57,7 +57,15 @@ module ram_save (
     input             save_ack,
 
     // ---- CPU reset control ----
-    output reg        rst_req           // Hold CPU in reset while restoring RAM
+    output reg        rst_req,          // Hold CPU in reset while restoring RAM
+
+    // ---- UART diagnostics (dbg_uart "V=" field) ----
+    output     [2:0]  dbg_state,        // live FSM state
+    output     [8:0]  dbg_sector,       // live sector counter
+    output     [7:0]  dbg_word,         // live word-in-sector counter
+    output     [5:0]  dbg_flags,        // {bk_ena, busy, bk_loading, sav_pending, pend_save, pend_load}
+    output reg [7:0]  dbg_ack_cnt,      // sd_ack rising edges since reset (saturating)
+    output reg [7:0]  dbg_rj_cnt        // drain words rejected by the FIFO (saturating)
 );
 
     assign sd_blk_cnt = 6'd0; // 1 sector (512 bytes) per read/write
@@ -143,6 +151,12 @@ module ram_save (
 
     assign save_addr = {sector_cnt, word_idx};
 
+    assign dbg_state  = state;
+    assign dbg_sector = sector_cnt;
+    assign dbg_word   = word_idx;
+    assign dbg_flags  = {bk_ena, (state != S_IDLE), bk_loading,
+                         sav_pending, pend_save, pend_load};
+
     always @(posedge clk) begin
         if (reset) begin
             state       <= S_IDLE;
@@ -164,6 +178,8 @@ module ram_save (
             old_ack     <= 1'b0;
             pend_load   <= 1'b0;
             pend_save   <= 1'b0;
+            dbg_ack_cnt <= 8'd0;
+            dbg_rj_cnt  <= 8'd0;
         end else begin
             old_load <= bk_load;
             old_save <= bk_save;
@@ -172,6 +188,11 @@ module ram_save (
 
             if (load_trigger) pend_load <= 1'b1;
             if (save_trigger) pend_save <= 1'b1;
+
+            // Saturating diagnostics: HPS sector transfers completed, and
+            // restore drain words the port-B FIFO rejected.
+            if (!old_ack && sd_ack && (dbg_ack_cnt != 8'hFF))
+                dbg_ack_cnt <= dbg_ack_cnt + 8'd1;
 
             // Clear rd/wr pulses when HPS acknowledges
             if (!old_ack && sd_ack) begin
@@ -281,6 +302,8 @@ module ram_save (
                         end
                     end else begin
                         d_pending <= 1'b0;
+                        if (b_wait && (dbg_rj_cnt != 8'hFF))
+                            dbg_rj_cnt <= dbg_rj_cnt + 8'd1;
                         if (!b_wait) begin
                             if (word_idx == 8'd255) begin
                                 if (sector_cnt == LAST_SECTOR) begin

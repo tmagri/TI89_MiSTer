@@ -510,6 +510,11 @@ module mem_ctrl (
     reg [16:0] clr_idx;    // RAM clear index  (0..131071)
     reg [6:0]  boot_idx;   // Header word index (0..127)
     reg        restore_happened; // a .sav restore ran since last image load
+    reg [3:0]  boot_grace; // B_WAIT settle count (rst_pending lags rom_loaded)
+    reg        rst_seen;   // rst_pending pulse seen while parked in B_DONE
+    reg        hdr_from_basecode; // boot vectors from flash $0 (warm-capable
+                               // basecode) instead of the $812088 cold-install
+                               // header — set whenever a .sav restore ran
 
     // Command dump (host 'D' command): range + progress
     reg        cmd_mem_r;      // 0 = flash image, 1 = calc RAM
@@ -671,8 +676,15 @@ module mem_ctrl (
                 S_IDLE: begin
                     cpu_dtack_n <= 1'b1;
                     if (boot_req) begin
-                        // Boot header copy: read flash window $812088..
-                        req_addr  <= 24'h812088 + {16'd0, boot_idx, 1'b0};
+                        // Boot header copy. After a .sav restore the vectors
+                        // come from the basecode boot block at the START of
+                        // the flash window (CPU $800000 = image word $000000;
+                        // what real hardware fetches at reset): it checks RAM
+                        // validity and warm-boots with RAM preserved. Fresh
+                        // installs use the $812088 cold-install header.
+                        req_addr  <= (hdr_from_basecode ? 24'h800000 :
+                                                         24'h812088) +
+                                     {16'd0, boot_idx, 1'b0};
                         req_rw    <= 1'b1;
                         req_uds_n <= 1'b0;
                         req_lds_n <= 1'b0;
@@ -880,6 +892,9 @@ module mem_ctrl (
             boot_state      <= B_WAIT;
             boot_done       <= 1'b0;
             restore_happened <= 1'b0;
+            boot_grace      <= 4'd0;
+            rst_seen        <= 1'b0;
+            hdr_from_basecode <= 1'b0;
             clr_idx         <= 17'd0;
             boot_idx        <= 7'd0;
             boot_ram_want   <= 1'b0;
@@ -910,15 +925,26 @@ module mem_ctrl (
 
             case (boot_state)
                 B_WAIT: begin
-                    // Hold off while ram_save is restoring the .sav (and
-                    // note that it did). When the restore finishes, skip
-                    // the RAM clear and header copy: the restored RAM is
-                    // the boot state (battery-backup semantics).
-                    if (rst_pending)
-                        restore_happened <= 1'b1;
-                    if (init_done && !rst_pending)
-                        boot_state <= restore_happened ? B_DONE :
-                                      (dump_en ? B_DPASS : B_CLEAR);
+                    // rst_pending (ram_save rst_req) rises 1-2 cycles AFTER
+                    // rom_loaded (the auto-restore trigger needs two
+                    // registered edges), so require it to stay low for a
+                    // settle window before deciding. A restore that ran (or
+                    // is starting) skips the RAM clear — battery-RAM
+                    // semantics — but still falls into B_COPY: the saved
+                    // runtime vector page is NOT a valid power-on state on
+                    // this OS (SSP=0), and the CPU must boot from the
+                    // pristine header like every cold start.
+                    if (rst_pending) begin
+                        restore_happened  <= 1'b1;
+                        hdr_from_basecode <= 1'b1;
+                        boot_grace        <= 4'd0;
+                    end else if (init_done) begin
+                        if (boot_grace != 4'd15)
+                            boot_grace <= boot_grace + 4'd1;
+                        else
+                            boot_state <= restore_happened ? B_COPY :
+                                          (dump_en ? B_DPASS : B_CLEAR);
+                    end
                 end
 
                 B_DPASS: begin
@@ -1020,10 +1046,24 @@ module mem_ctrl (
 
                 B_DONE: begin
                     boot_done <= 1'b1;
+                    // A .sav restore just finished while parked here (manual
+                    // "Load Backup RAM" mid-session): re-copy the pristine
+                    // OS header over the restored vector page and hold the
+                    // CPU (boot_done low) until it lands — the saved runtime
+                    // vectors are not a power-on state (SSP=0), so releasing
+                    // into them bus-errors immediately.
+                    if (rst_seen && !rst_pending) begin
+                        rst_seen          <= 1'b0;
+                        boot_idx          <= 7'd0;
+                        boot_done         <= 1'b0;
+                        hdr_from_basecode <= 1'b1;
+                        boot_state        <= B_COPY;
+                    end else if (rst_pending)
+                        rst_seen <= 1'b1;
                     // Host command dump: only accepted here (CPU released,
                     // no boot dump in flight). cmd_req arrives already
                     // validated/clamped by dbg_uart's parser.
-                    if (cmd_req) begin
+                    else if (cmd_req) begin
                         cmd_mem_r      <= cmd_mem;
                         cmd_wr_r       <= cmd_wr;
                         cmd_start_r    <= cmd_start;

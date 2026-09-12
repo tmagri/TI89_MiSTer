@@ -29,6 +29,13 @@ module dbg_uart (
     input             dbg_ai7,
     input       [2:0] boot_status,
     input             status_mute,  // OSD: suppress periodic status lines
+    // ram_save diagnostics (status line "V=" field)
+    input       [2:0] sv_state,     // ram_save FSM state (0=IDLE..5=REST_DRAIN)
+    input       [8:0] sv_sector,    // live sector counter (0..511)
+    input       [7:0] sv_word,      // live word-in-sector counter
+    input       [5:0] sv_flags,     // {bk_ena, busy, bk_loading, sav_pending, pend_save, pend_load}
+    input       [7:0] sv_ack,       // saturating count of sd_ack rising edges
+    input       [7:0] sv_rj,        // saturating count of drain FIFO rejections
 
     // ---- SDRAM image dump (pre-boot read-back verify from mem_ctrl) ----
     // Streams "$P<n>\r\n" per pass, "@<6-hex word addr>\r\n" every 4096
@@ -85,7 +92,7 @@ module dbg_uart (
     // 115200 baud @ 60 MHz: 60,000,000 / 115200 = 521 clocks/bit
     localparam [9:0]  BIT_PERIOD    = 10'd520;
     localparam [23:0] REPEAT_PERIOD = 24'd15_000_000; // ~250 ms (4 lines/sec)
-    localparam [6:0]  MSG_LEN       = 7'd87;   // incl. " C=xy" parser diag
+    localparam [6:0]  MSG_LEN       = 7'd103;  // incl. " C=xy" + " V=" ram_save diag
     // Trace line layout (17 chars, indices 0..16):
     //   0    : line kind — F fault header, E bus-ring entry, L flash-watch
     //   1..2 : fault# (F) / ring entry (E: 00=most recent) / fl entry (L)
@@ -141,6 +148,11 @@ module dbg_uart (
     reg        snap_ai7;
     reg  [2:0] snap_boot_status;
     reg  [7:0] snap_cpdiag;   // parser end-state at last CR ("C=" field)
+    reg  [5:0] snap_sv_flags;
+    reg  [8:0] snap_sv_sector;
+    reg  [7:0] snap_sv_word;
+    reg  [7:0] snap_sv_ack;
+    reg  [7:0] snap_sv_rj;
 
     function [7:0] hex2ascii;
         input [3:0] nib;
@@ -829,8 +841,25 @@ module dbg_uart (
             7'd82: tx_byte = "=";
             7'd83: tx_byte = hex2ascii(snap_cpdiag[7:4]);
             7'd84: tx_byte = hex2ascii(snap_cpdiag[3:0]);
-            7'd85: tx_byte = 8'h0D; // '\r'
-            7'd86: tx_byte = 8'h0A; // '\n'
+            7'd85: tx_byte = 8'h20;
+            // " V=" ram_save diagnostics (2+3+2+2+2 hex)
+            7'd86: tx_byte = "V";
+            7'd87: tx_byte = "=";
+            7'd88: tx_byte = hex2ascii(snap_sv_flags[5:2]);
+            7'd89: tx_byte = hex2ascii(snap_sv_flags[1:0]);
+            7'd90: tx_byte = " ";
+            7'd91: tx_byte = hex2ascii({3'b000, snap_sv_sector[8]});
+            7'd92: tx_byte = hex2ascii(snap_sv_sector[7:4]);
+            7'd93: tx_byte = hex2ascii(snap_sv_sector[3:0]);
+            7'd94: tx_byte = hex2ascii(snap_sv_word[7:4]);
+            7'd95: tx_byte = hex2ascii(snap_sv_word[3:0]);
+            7'd96: tx_byte = " ";
+            7'd97: tx_byte = hex2ascii(snap_sv_ack[7:4]);
+            7'd98: tx_byte = hex2ascii(snap_sv_ack[3:0]);
+            7'd99: tx_byte = hex2ascii(snap_sv_rj[7:4]);
+            7'd100: tx_byte = hex2ascii(snap_sv_rj[3:0]);
+            7'd101: tx_byte = 8'h0D; // '\r'
+            7'd102: tx_byte = 8'h0A; // '\n'
             default: tx_byte = 8'h20;
         endcase
         end
@@ -864,6 +893,11 @@ module dbg_uart (
             snap_ai7         <= 1'b0;
             snap_boot_status <= 3'd0;
             snap_cpdiag      <= 8'h00;
+            snap_sv_flags    <= 6'd0;
+            snap_sv_sector   <= 9'd0;
+            snap_sv_word     <= 8'd0;
+            snap_sv_ack      <= 8'd0;
+            snap_sv_rj       <= 8'd0;
             du_send          <= 1'b0;
             du_load_pulse    <= 1'b0;
         end else begin
@@ -930,6 +964,11 @@ module dbg_uart (
                         snap_ai7         <= dbg_ai7;
                         snap_boot_status <= boot_status;
                         snap_cpdiag      <= cp_diag;
+                        snap_sv_flags    <= sv_flags;
+                        snap_sv_sector   <= sv_sector;
+                        snap_sv_word     <= sv_word;
+                        snap_sv_ack      <= sv_ack;
+                        snap_sv_rj       <= sv_rj;
                         char_idx         <= 7'd0;
                         state            <= S_LOAD;
                     end else begin
