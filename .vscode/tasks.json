@@ -1,0 +1,95 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "TI-89: Deploy and monitor",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/ti89_build_debug.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "TI-89: Compile, deploy, and monitor",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/ti89_build_debug.sh",
+        "--compile"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "TI-89: Compile only",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/ti89_build_debug.sh",
+        "--compile-only"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "TI-89: Deploy without reboot",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/ti89_build_debug.sh",
+        "--no-reboot"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "TI-89: Monitor UART only",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/ti89_build_debug.sh",
+        "--monitor"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "TI-89: Kill stuck build processes",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/ti89_build_debug.sh",
+        "--kill"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "TI-89: Show script help",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/ti89_build_debug.sh",
+        "--help"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

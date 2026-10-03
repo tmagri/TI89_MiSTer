@@ -6,6 +6,7 @@
 # Usage:
 #   ./ti89_build_debug.sh              Deploy existing .rbf + .89u, monitor UART
 #   ./ti89_build_debug.sh --compile    Compile first via Docker, then deploy+monitor
+#   ./ti89_build_debug.sh --compile-only  Compile via Docker without deploy or UART monitor
 #   ./ti89_build_debug.sh --no-reboot  Deploy but skip the MiSTer reboot step
 #   ./ti89_build_debug.sh --monitor    SSH into MiSTer UART monitor only (skip deploy)
 #   ./ti89_build_debug.sh --kill       Kill stuck Docker/Quartus processes and clear locks
@@ -91,6 +92,7 @@ build_lock_release() {
 
 # ─── Flags ────────────────────────────────────────────────────────────────────
 DO_COMPILE=false
+COMPILE_ONLY=false
 DO_REBOOT=true
 MONITOR_ONLY=false
 ROM_MISSING=false
@@ -99,6 +101,7 @@ DO_KILL=false
 for arg in "$@"; do
     case "$arg" in
         --compile)      DO_COMPILE=true ;;
+        --compile-only) DO_COMPILE=true; COMPILE_ONLY=true ;;
         --no-reboot)    DO_REBOOT=false ;;
         --monitor|--monitor-only) MONITOR_ONLY=true ;;
         --kill)         DO_KILL=true ;;
@@ -188,7 +191,7 @@ step "Pre-flight checks"
 [[ -f "$QSF_FILE" ]] || fail "Not in project root — TI89.qpf not found at $QSF_FILE"
 log "Project: $PROJECT_DIR"
 
-if ! $MONITOR_ONLY; then
+if ! $MONITOR_ONLY && ! $COMPILE_ONLY; then
     # Check .89u ROM
     if [[ ! -f "$ROM_FILE" ]]; then
         warn ".89u ROM not found at $ROM_FILE"
@@ -234,17 +237,19 @@ if ! $MONITOR_ONLY; then
     fi
 fi
 
-# Check SSH reachability
-log "Checking MiSTer SSH at $MISTER_HOST..."
-if ! ssh $SSH_OPTS "$MISTER_SSH" "true" 2>/dev/null; then
-    if $MONITOR_ONLY; then
-        fail "Cannot reach MiSTer at $MISTER_HOST — is it powered on and connected?"
+# Check SSH reachability only for tasks that use the MiSTer
+if ! $COMPILE_ONLY; then
+    log "Checking MiSTer SSH at $MISTER_HOST..."
+    if ! ssh $SSH_OPTS "$MISTER_SSH" "true" 2>/dev/null; then
+        if $MONITOR_ONLY; then
+            fail "Cannot reach MiSTer at $MISTER_HOST — is it powered on and connected?"
+        else
+            warn "MiSTer not currently reachable — will retry after deploy/reboot"
+        fi
     else
-        warn "MiSTer not currently reachable — will retry after deploy/reboot"
+        MISTER_KERNEL=$(ssh $SSH_OPTS "$MISTER_SSH" "uname -r" 2>/dev/null || echo "unknown")
+        ok "MiSTer SSH reachable (kernel: $MISTER_KERNEL)"
     fi
-else
-    MISTER_KERNEL=$(ssh $SSH_OPTS "$MISTER_SSH" "uname -r" 2>/dev/null || echo "unknown")
-    ok "MiSTer SSH reachable (kernel: $MISTER_KERNEL)"
 fi
 
 # =============================================================================
@@ -299,6 +304,12 @@ else
         step "Phase 1 — Compile (skipped; using existing .rbf)"
         log "Pass --compile to rebuild from RTL sources"
     fi
+fi
+
+# A compile-only run ends here without requiring MiSTer access.
+if $COMPILE_ONLY; then
+    ok "Compile-only run complete."
+    exit 0
 fi
 
 # =============================================================================
