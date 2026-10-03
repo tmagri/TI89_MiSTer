@@ -71,15 +71,15 @@ In **Mapped mode** these write directly into the matrix and stay asserted exactl
 
 Natural mode implements a logical translation pipeline in hardware (`rtl/keyboard.sv`):
 
-1. **Scancode decoder** — every PS/2 scancode is decoded — using the current PC Shift state — into a target matrix position plus a 4-bit *required modifier mask* `{ALPHA, SHIFT, 2ND, ♦}`. For example, `A` decodes to the `=` key requiring ALPHA; `Shift+A` decodes to `=` requiring ALPHA+SHIFT (uppercase); `Shift+8` decodes to the `×` key directly.
+1. **Scancode decoder** — every PS/2 scancode is decoded — using the current PC Shift state — into a target matrix position plus a 4-bit *required modifier mask* `{ALPHA, SHIFT, 2ND, ♦}`. For example, `A` decodes to the `=` key requiring ALPHA (lowercase); `Shift+A` decodes to the same `=` key requiring SHIFT **instead of** ALPHA (uppercase — the real TI-89 OS reads the shifted letter directly off the key without needing ALPHA at all); `Shift+8` decodes to the `×` key directly.
 2. **Key tracker** — the decoded assignment for each key currently held is remembered per-scancode, so a key *release* clears the same matrix cell it pressed, even if Shift state changed in between (this prevents stuck keys on Shift-release).
 3. **Event FIFO** — press/release events enter a 16-deep circular buffer, so nothing is dropped while the sequencer is busy (full N-key rollover at typing speed; auto-repeat is filtered).
-4. **Modifier sequencer** — a non-blocking state machine dequeues events and, when a key needs modifiers that are not currently asserted, presses them into the matrix first and waits **5 ms** so the OS scan loop observes them before the key itself. On release, modifiers are only removed after the last key that needed them is released — per-modifier reference counters make overlapping sequences (e.g. `Shift+A` followed immediately by `Shift+B`) work correctly.
+4. **Modifier sequencer** — a non-blocking state machine dequeues events and, when a key needs modifiers that are not currently asserted, presses them into the matrix **one at a time** (fixed order ALPHA → SHIFT → 2ND → ♦), waiting after each individual bit so the OS scan loop observes it before the next one — never two modifier bits in the same instant. The key itself is pressed only once all of its required modifiers have each settled. On release, modifiers are removed the same way, one at a time, in reverse order, after the last key that needed them is released — per-modifier reference counters make overlapping sequences (e.g. `Shift+A` followed immediately by `Shift+B`) work correctly.
 
 Because the decoder is scancode-complete, most of the PC keyboard "just works":
 
 * **Shifted symbols** produce the real TI-89 keystrokes: `!` `^` `*` `(` `)` `+` from the number row, `<`/`>` (2ND+`0` / 2ND+`.`), `[`/`]` (2ND+`,` / 2ND+`÷`), `∠` (2ND+EE) and `π` (2ND+`^`).
-* **Letters** produce lowercase (ALPHA + key) and **Shift+letter** produces uppercase (ALPHA+SHIFT+key); `T` `X` `Y` `Z` use their dedicated keys and only need SHIFT when capitalized.
+* **Letters** produce lowercase (ALPHA + key) and **Shift+letter** produces uppercase (SHIFT + key, with ALPHA **not** held — matching the real TI-89, where ALPHA and SHIFT are alternatives, not combined); `T` `X` `Y` `Z` use their dedicated keys and only need SHIFT when capitalized.
 * **Space** inserts a space (ALPHA+(−)); **Shift+Space** or the **`-`** key gives the negate/(−) key, and **Shift+`-`** gives the binary minus operator.
 
 #### Mapped mode (legacy)
