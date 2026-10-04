@@ -160,7 +160,16 @@ module mem_ctrl (
     input             cmd_wr,       // 1 = pattern-write command (RAM only)
     input      [23:0] cmd_start,    // byte offset (even)
     input      [23:0] cmd_len,      // byte length (even, nonzero)
-    output reg        dump_cmd_mode
+    output reg        dump_cmd_mode,
+
+    // ---- RAM save-state read port (savestate.sv, lowest priority) ----
+    // save_req/save_addr/save_rdata/save_ack: identical convention to
+    // the old ram_save.sv client -- holds save_addr stable and asserts
+    // save_req until the arbiter pulses save_ack with save_rdata valid.
+    input             save_req,
+    input      [16:0] save_addr,
+    output reg [15:0] save_rdata,
+    output reg        save_ack
 );
 
     // =========================================================================
@@ -178,6 +187,7 @@ module mem_ctrl (
     localparam [1:0] SRC_LCD  = 2'd0;
     localparam [1:0] SRC_CPU  = 2'd1;
     localparam [1:0] SRC_BOOT = 2'd2;
+    localparam [1:0] SRC_SAVE = 2'd3;
 
     reg [1:0] grant;
 
@@ -315,6 +325,15 @@ module mem_ctrl (
                     ram_wdata <= boot_ram_wdata;
                     ram_uds_n <= 1'b0;
                     ram_lds_n <= 1'b0;
+                end else if (save_req) begin
+                    // Lowest priority: save-state RAM read (savestate.sv)
+                    ram_valid <= 1'b1;
+                    ram_src   <= SRC_SAVE;
+                    ram_wr    <= 1'b0;   // always a read
+                    ram_addr  <= RAM_BASE + {7'd0, save_addr, 1'b0};
+                    ram_wdata <= 16'd0;
+                    ram_uds_n <= 1'b0;
+                    ram_lds_n <= 1'b0;
                 end
             end
         end
@@ -342,6 +361,8 @@ module mem_ctrl (
             cpu_ram_done <= 1'b0;
             boot_ram_done<= 1'b0;
             dump_rd_data <= 16'd0;
+            save_rdata   <= 16'd0;
+            save_ack     <= 1'b0;
         end else begin
             sd_rd         <= 1'b0;
             sd_wr         <= 1'b0;
@@ -349,6 +370,7 @@ module mem_ctrl (
             lcd_ram_ack   <= 1'b0;
             cpu_ram_done  <= 1'b0;
             boot_ram_done <= 1'b0;
+            save_ack      <= 1'b0;
 
             case (grant)
                 G_NONE: begin
@@ -396,6 +418,10 @@ module mem_ctrl (
                                 if (!ram_wr)
                                     dump_rd_data <= sd_rdata;
                                 boot_ram_done <= 1'b1;
+                            end
+                            SRC_SAVE: begin
+                                save_rdata <= sd_rdata;
+                                save_ack   <= 1'b1;
                             end
                             default: ;
                         endcase

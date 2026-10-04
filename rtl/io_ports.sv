@@ -68,7 +68,19 @@ module io_ports (
     output        prot_arm,
 
     // Real-Time Clock interface (MiSTer HPS timestamp)
-    input  [32:0] timestamp
+    input  [32:0] timestamp,
+
+    // ---- Save-state: 793 bits = io1(256)[792:537], io2(512)[536:25],
+    // cpu_stop_pulse/ack_ai2_pulse/ack_ai6_pulse/timer_load_pulse(4)[24:21],
+    // fs_div(20)[20:1], frame_bit(1)[0:0].
+    // NOTE: io3 (RTC bank) and the rtc_* registers are intentionally NOT
+    // captured -- the RTC is self-correcting from the MiSTer HPS
+    // timestamp (timestamp_updated) shortly after a restore, and losing a
+    // few seconds of RTC precision is a reasonable, documented tradeoff
+    // against the size/complexity of saving the full 256-byte io3 array.
+    input              ssWr,
+    input      [792:0] ssDin,
+    output     [792:0] ssDout
 );
 
     // =========================================================================
@@ -214,8 +226,13 @@ module io_ports (
             b2_lo = {frame_bit, io2[6'h1D][6:0]};
     end
 
+    assign ssDout[20:0] = { fs_div, frame_bit};
+
     always @(posedge clk) begin
-        if (reset) begin
+        if (ssWr) begin
+            { fs_div, frame_bit} <= ssDin[20:0];
+        end
+        else if (reset) begin
             fs_div <= 20'd0;
             frame_bit <= 1'b0;
         end else begin
@@ -361,8 +378,46 @@ module io_ports (
     // Register write logic
     // =========================================================================
 
+    // NOTE: Quartus 17.0's Verilog parser does not accept the
+    // SystemVerilog streaming operator ({>>{array}}), so io1/io2 are
+    // packed/unpacked via explicit per-element concatenation instead.
+    assign ssDout[792:537] = { io1[0], io1[1], io1[2], io1[3], io1[4], io1[5],
+        io1[6], io1[7], io1[8], io1[9], io1[10], io1[11], io1[12], io1[13],
+        io1[14], io1[15], io1[16], io1[17], io1[18], io1[19], io1[20],
+        io1[21], io1[22], io1[23], io1[24], io1[25], io1[26], io1[27],
+        io1[28], io1[29], io1[30], io1[31]};
+    assign ssDout[536:25]  = { io2[0], io2[1], io2[2], io2[3], io2[4], io2[5],
+        io2[6], io2[7], io2[8], io2[9], io2[10], io2[11], io2[12], io2[13],
+        io2[14], io2[15], io2[16], io2[17], io2[18], io2[19], io2[20],
+        io2[21], io2[22], io2[23], io2[24], io2[25], io2[26], io2[27],
+        io2[28], io2[29], io2[30], io2[31], io2[32], io2[33], io2[34],
+        io2[35], io2[36], io2[37], io2[38], io2[39], io2[40], io2[41],
+        io2[42], io2[43], io2[44], io2[45], io2[46], io2[47], io2[48],
+        io2[49], io2[50], io2[51], io2[52], io2[53], io2[54], io2[55],
+        io2[56], io2[57], io2[58], io2[59], io2[60], io2[61], io2[62],
+        io2[63]};
+    assign ssDout[24:21]   = { cpu_stop_pulse, ack_ai2_pulse, ack_ai6_pulse, timer_load_pulse};
+
     always @(posedge clk) begin
-        if (reset) begin
+        if (ssWr) begin
+            { io1[0], io1[1], io1[2], io1[3], io1[4], io1[5], io1[6], io1[7],
+              io1[8], io1[9], io1[10], io1[11], io1[12], io1[13], io1[14],
+              io1[15], io1[16], io1[17], io1[18], io1[19], io1[20], io1[21],
+              io1[22], io1[23], io1[24], io1[25], io1[26], io1[27], io1[28],
+              io1[29], io1[30], io1[31]} <= ssDin[792:537];
+            { io2[0], io2[1], io2[2], io2[3], io2[4], io2[5], io2[6], io2[7],
+              io2[8], io2[9], io2[10], io2[11], io2[12], io2[13], io2[14],
+              io2[15], io2[16], io2[17], io2[18], io2[19], io2[20], io2[21],
+              io2[22], io2[23], io2[24], io2[25], io2[26], io2[27], io2[28],
+              io2[29], io2[30], io2[31], io2[32], io2[33], io2[34], io2[35],
+              io2[36], io2[37], io2[38], io2[39], io2[40], io2[41], io2[42],
+              io2[43], io2[44], io2[45], io2[46], io2[47], io2[48], io2[49],
+              io2[50], io2[51], io2[52], io2[53], io2[54], io2[55], io2[56],
+              io2[57], io2[58], io2[59], io2[60], io2[61], io2[62], io2[63]
+            } <= ssDin[536:25];
+            { cpu_stop_pulse, ack_ai2_pulse, ack_ai6_pulse, timer_load_pulse} <= ssDin[24:21];
+        end
+        else if (reset) begin
             integer i;
             for (i = 0; i < 32; i = i + 1)
                 io1[i] <= 8'h00;

@@ -66,7 +66,14 @@ module timer_int (
 
     // Individual pending flags (bit N = auto-interrupt N pending).
     // Used by the top level for the $600005 STOP wake-up logic.
-    output [7:0] int_pend
+    output [7:0] int_pend,
+
+    // ---- Save-state: 50 bits = base_counter(16),base_tick,timer(19),
+    // timer_value(8),ai1_pending,ai2_pending,ai3_pending,ai5_pending,
+    // ai6_pending,ai7_pending ----
+    input             ssWr,
+    input      [49:0] ssDin,
+    output     [49:0] ssDout
 );
 
     // =========================================================================
@@ -78,8 +85,13 @@ module timer_int (
     reg [15:0] base_counter;
     reg        base_tick;
 
+    assign ssDout[49:33] = { base_counter, base_tick};
+
     always @(posedge clk) begin
-        if (reset) begin
+        if (ssWr) begin
+            { base_counter, base_tick} <= ssDin[49:33];
+        end
+        else if (reset) begin
             base_counter <= 16'd0;
             base_tick    <= 1'b0;
         end else begin
@@ -131,8 +143,15 @@ module timer_int (
     assign int_pend = {ai7_pending, ai6_pending, ai5_pending, 1'b0,
                        ai3_pending, ai2_pending, ai1_pending, 1'b0};
 
+    assign ssDout[32:0] = { timer, timer_value, ai1_pending, ai2_pending,
+        ai3_pending, ai5_pending, ai6_pending, ai7_pending};
+
     always @(posedge clk) begin
-        if (reset) begin
+        if (ssWr) begin
+            { timer, timer_value, ai1_pending, ai2_pending,
+              ai3_pending, ai5_pending, ai6_pending, ai7_pending} <= ssDin[32:0];
+        end
+        else if (reset) begin
             timer        <= 19'd0;
             timer_value  <= 8'd0;
             ai1_pending  <= 1'b0;

@@ -252,6 +252,10 @@ module emu
 		"O9,Keyboard Mode,Natural,Mapped;",
 		"O10,Numpad Mode,Cursor,Digits;",
 		"-;",
+		"O[12:11],Save Slot,1,2,3,4;",
+		"R[13],Save State;",
+		"R[14],Load State;",
+		"-;",
 		"R0,Reset;",
 		"V,v1.0;"
 	};
@@ -266,6 +270,20 @@ module emu
 	wire   [1:0] hps_buttons;
 	wire         sdram_b_wait;   // SDRAM loader-FIFO backpressure
 	wire  [32:0] timestamp;
+
+	// MiSTer standard block device interface (save-state slots)
+	wire        ss_img_mounted;
+	wire        ss_img_readonly;
+	wire [63:0] ss_img_size;
+	wire [31:0] ss_sd_lba;
+	wire  [5:0] ss_sd_blk_cnt;
+	wire        ss_sd_rd;
+	wire        ss_sd_wr;
+	wire        ss_sd_ack;
+	wire  [7:0] ss_sd_buff_addr;
+	wire [15:0] ss_sd_buff_dout;
+	wire [15:0] ss_sd_buff_din;
+	wire        ss_sd_buff_wr;
 
 	hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(1)) hps_io
 	(
@@ -339,20 +357,20 @@ module emu
 		.info_req(1'b0),
 		.info(8'd0),
 
-		.img_mounted(),
-		.img_readonly(),
-		.img_size(),
+		.img_mounted(ss_img_mounted),
+		.img_readonly(ss_img_readonly),
+		.img_size(ss_img_size),
 
-		.sd_lba('{32'd0}),
-		.sd_blk_cnt('{6'd0}),
-		.sd_rd(1'd0),
-		.sd_wr(1'd0),
-		.sd_ack(),
+		.sd_lba('{ss_sd_lba}),
+		.sd_blk_cnt('{ss_sd_blk_cnt}),
+		.sd_rd(ss_sd_rd),
+		.sd_wr(ss_sd_wr),
+		.sd_ack(ss_sd_ack),
 
-		.sd_buff_addr(),
-		.sd_buff_dout(),
-		.sd_buff_din('{16'd0}),
-		.sd_buff_wr(),
+		.sd_buff_addr(ss_sd_buff_addr),
+		.sd_buff_dout(ss_sd_buff_dout),
+		.sd_buff_din('{ss_sd_buff_din}),
+		.sd_buff_wr(ss_sd_buff_wr),
 
 		.ioctl_download(ioctl_download),
 		.ioctl_index(ioctl_index),
@@ -452,9 +470,9 @@ module emu
 		.a_rdata(sd_rdata),
 		.a_ready(sd_ready),
 
-		.b_addr({3'd0, ld_addr}),
-		.b_wdata(ld_dout),
-		.b_wr(ld_wr),
+		.b_addr(ss_restoring ? ss_b_addr : {3'd0, ld_addr}),
+		.b_wdata(ss_restoring ? ss_b_wdata : ld_dout),
+		.b_wr(ss_restoring ? ss_b_wr : ld_wr),
 		.b_wait(sdram_b_wait),
 
 		.init_done(sdram_init_done)
@@ -620,7 +638,12 @@ module emu
 		.cmd_wr(dbg_cmd_wr),
 		.cmd_start(dbg_cmd_start),
 		.cmd_len(dbg_cmd_len),
-		.dump_cmd_mode(dump_cmd_mode)
+		.dump_cmd_mode(dump_cmd_mode),
+
+		.save_req(ss_save_req),
+		.save_addr(ss_save_addr),
+		.save_rdata(ss_save_rdata),
+		.save_ack(ss_save_ack)
 	);
 
 	///////////////////////////////////////////////////////////////////////////
@@ -694,7 +717,9 @@ module emu
 		.ack_ai6(ack_ai6),
 		.timer_load(timer_load),
 		.prot_arm(prot_arm),
-		.timestamp(timestamp)
+		.timestamp(timestamp),
+
+		.ssWr(ss_wr), .ssDin(ss_din[844:52]), .ssDout(ss_dout[844:52])
 	);
 
 	///////////////////////////////////////////////////////////////////////////
@@ -728,7 +753,77 @@ module emu
 		.ack_level(cpu_addr[3:1]),
 
 		.ipl(ipl),
-		.int_pend(int_pend)
+		.int_pend(int_pend),
+
+		.ssWr(ss_wr), .ssDin(ss_din[51:2]), .ssDout(ss_dout[51:2])
+	);
+
+	///////////////////////////////////////////////////////////////////////////
+	// Save states (CPU + I/O + Timer + 256KB RAM; see rtl/savestate.sv)
+	///////////////////////////////////////////////////////////////////////////
+
+	wire        ss_want_halt;
+	wire        ss_wr;
+	wire [2255:0] ss_din;
+	wire [2255:0] ss_dout;
+	wire        ss_save_req;
+	wire [16:0] ss_save_addr;
+	wire [15:0] ss_save_rdata;
+	wire        ss_save_ack;
+	wire [23:0] ss_b_addr;
+	wire [15:0] ss_b_wdata;
+	wire        ss_b_wr;
+	wire        ss_restoring;
+	wire        ss_busy;
+	// NOTE: bits [1:0] of the shared 2256-bit state bus carry no
+	// consumer -- cpu(1411)+io(793)+timer(50) = 2254 bits are wired
+	// below (slices [2255:845], [844:52], [51:2]), leaving a 2-bit pad
+	// at the bottom. savestate.sv's pack/unpack loop still covers the
+	// full 2256 bits internally; tie the otherwise-undriven pad of the
+	// save-direction bus to 0 so there's no X in simulation.
+	assign ss_dout[1:0] = 2'b00;
+
+	savestate savestate
+	(
+		.clk(clk_sys),
+		.reset(reset),
+
+		.img_mounted(ss_img_mounted),
+		.img_readonly(ss_img_readonly),
+		.img_size(ss_img_size),
+		.sd_lba(ss_sd_lba),
+		.sd_blk_cnt(ss_sd_blk_cnt),
+		.sd_rd(ss_sd_rd),
+		.sd_wr(ss_sd_wr),
+		.sd_ack(ss_sd_ack),
+		.sd_buff_addr(ss_sd_buff_addr),
+		.sd_buff_dout(ss_sd_buff_dout),
+		.sd_buff_din(ss_sd_buff_din),
+		.sd_buff_wr(ss_sd_buff_wr),
+
+		.save_trig(status[13]),
+		.load_trig(status[14]),
+		.slot_sel(status[12:11]),
+
+		.want_halt(ss_want_halt),
+		.is_halted(ss_is_halted),
+
+		.save_req(ss_save_req),
+		.save_addr(ss_save_addr),
+		.save_rdata(ss_save_rdata),
+		.save_ack(ss_save_ack),
+
+		.b_addr(ss_b_addr),
+		.b_wdata(ss_b_wdata),
+		.b_wr(ss_b_wr),
+		.b_wait(sdram_b_wait),
+
+		.ssWr(ss_wr),
+		.ssDin(ss_din[2255:0]),
+		.ssDout(ss_dout[2255:0]),
+
+		.busy(ss_busy),
+		.restoring(ss_restoring)
 	);
 
 	///////////////////////////////////////////////////////////////////////////
@@ -804,7 +899,12 @@ module emu
 
 	// Freeze only while the bus is idle so an in-flight bus cycle always
 	// completes; on wake-up the CPU resumes exactly where it stopped.
-	wire cpu_halt = stopped && cpu_as_n;
+	// ss_want_halt (from the save-state controller) uses the exact same
+	// mechanism as the $600005 STOP register -- freezing via `halt`
+	// leaves every internal fx68k bit exactly where it was, unlike
+	// cpu_reset (extReset/pwrUp), which would reset them.
+	wire cpu_halt     = (stopped || ss_want_halt) && cpu_as_n;
+	wire ss_is_halted = ss_want_halt && cpu_as_n;
 
 	cpu_wrapper cpu
 	(
@@ -830,7 +930,9 @@ module emu
 		.vpa_n(vpa_n),
 
 		.cpu_reset_out_n(),
-		.cpu_halted_n()
+		.cpu_halted_n(),
+
+		.ssWr(ss_wr), .ssDin(ss_din[2255:845]), .ssDout(ss_dout[2255:845])
 	);
 
 	///////////////////////////////////////////////////////////////////////////

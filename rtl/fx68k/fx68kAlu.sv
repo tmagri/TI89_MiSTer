@@ -43,7 +43,14 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 	output ze,
 	output reg [15:0] alue,
 	output reg [7:0] ccr,
-	output [15:0] aluOut);
+	output [15:0] aluOut,
+	// ---- Save-state: 84 bits. [83:53] (31b) = row(16),isArX,noCcrEn,
+	// rIrd8,isByte,isLong,ccrMask(5),oper(5). [52:43] (10b) = bcdLatch(8),
+	// bcdCarry,bcdOverf. [42:0] (43b) = aluLatch(16),coreH,ccrCore(5),
+	// alue(16),pswCcr(5) ----
+	input             ssWr,
+	input      [83:0] ssDin,
+	output     [83:0] ssDout);
 
 
 `define ALU_ROW_01		16'h0002
@@ -123,8 +130,14 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 	logic isShift;
 	logic shftCin, shftRight, addCin;
 	
-	// Register some decoded signals	
+	// Register some decoded signals
+	assign ssDout[83:53] = { row, isArX, noCcrEn, rIrd8, isByte, isLong, ccrMask, oper};
+
 	always_ff @( posedge clk) begin
+		if( ssWr) begin
+			{ row, isArX, noCcrEn, rIrd8, isByte, isLong, ccrMask, oper} <= ssDin[83:53];
+		end
+		else begin
 		if( enT3) begin
 			row <= cRow;
 			isArX <= cIsArX;
@@ -140,6 +153,7 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 			
 			ccrMask <= cMask;
 			oper <= aluOp;
+		end
 		end
 	end
 	
@@ -179,8 +193,12 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 	// BCD adjust is among the slowest processing on ALU !
 	// Precompute and register BCD result on T1
 	// We don't need to wait for execution buses because corf is always added to ALU previous result
+	assign ssDout[52:43] = { bcdLatch, bcdCarry, bcdOverf};
+
 	always_ff @( posedge clk)
-		if( enT1) begin
+		if( ssWr)
+			{ bcdLatch, bcdCarry, bcdOverf} <= ssDin[52:43];
+		else if( enT1) begin
 			bcdLatch <= bcdResult;
 			bcdCarry <= bcdC;
 			bcdOverf <= bcdV;
@@ -422,7 +440,13 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 			ccrMasked[ ZF] = ccrTemp[ ZF] & pswCcr[ ZF];
 	end
 		
+	assign ssDout[42:0] = { aluLatch, coreH, ccrCore, alue, pswCcr};
+
 	always_ff @( posedge clk) begin
+		if( ssWr) begin
+			{ aluLatch, coreH, ccrCore, alue, pswCcr} <= ssDin[42:0];
+		end
+		else begin
 		if( enT3) begin
 			// Update latches from ALU operators
 			if( (| aluColumn)) begin
@@ -450,6 +474,7 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 			pswCcr <= ftu[4:0];	
 		else if( enT3 &	~noCcrEn & (finish | init))
 			pswCcr <= ccrMasked;
+		end
 	end
 	assign ccr = { 3'b0, pswCcr};	
 

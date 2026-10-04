@@ -33,7 +33,13 @@ module cpu_wrapper (
 
     // Reset output from CPU
     output        cpu_reset_out_n,
-    output        cpu_halted_n
+    output        cpu_halted_n,
+
+    // ---- Save-state ----
+    // Own 5 bits (clk_counter(3), en_phi1, en_phi2) + fx68k's 1406 bits.
+    input                ssWr,
+    input      [1410:0] ssDin,
+    output     [1410:0] ssDout
 );
 
     // =========================================================================
@@ -57,8 +63,13 @@ module cpu_wrapper (
     reg       en_phi1;
     reg       en_phi2;
 
+    assign ssDout[1410:1406] = { clk_counter, en_phi1, en_phi2};
+
     always @(posedge clk) begin
-        if (reset || !cpu_en || halt) begin
+        if (ssWr) begin
+            { clk_counter, en_phi1, en_phi2} <= ssDin[1410:1406];
+        end
+        else if (reset || !cpu_en || halt) begin
             clk_counter <= 3'd0;
             en_phi1     <= 1'b0;
             en_phi2     <= 1'b0;
@@ -141,7 +152,9 @@ module cpu_wrapper (
 
         .iEdb       (cpu_din),
         .oEdb       (fx_dout),
-        .eab        (fx_addr)
+        .eab        (fx_addr),
+
+        .ssWr( ssWr), .ssDin( ssDin[1405:0]), .ssDout( ssDout[1405:0])
     );
 
     // =========================================================================
