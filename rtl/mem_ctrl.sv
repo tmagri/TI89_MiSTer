@@ -160,24 +160,7 @@ module mem_ctrl (
     input             cmd_wr,       // 1 = pattern-write command (RAM only)
     input      [23:0] cmd_start,    // byte offset (even)
     input      [23:0] cmd_len,      // byte length (even, nonzero)
-    output reg        dump_cmd_mode,
-
-    // ---- RAM save read port (ram_save.sv, lowest priority) ----
-    // ram_save asserts save_req and holds save_addr stable; the arbiter
-    // issues one SDRAM read and pulses save_ack with save_rdata valid.
-    input             save_req,     // request one RAM read word
-    input      [16:0] save_addr,    // word index within 256 KB RAM
-    output reg [15:0] save_rdata,   // result word (valid when save_ack)
-    output reg        save_ack,     // one-cycle completion pulse
-
-    // RAM dirty pulse (asserted for 1 cycle when CPU completes a write to RAM)
-    output reg        ram_write_pulse,
-
-    // High while ram_save is restoring the .sav into RAM (holds the boot
-    // FSM off the RAM; a completed restore also skips B_CLEAR/B_COPY —
-    // the restored RAM already contains a valid vector page, and wiping
-    // or header-copying it would destroy the restored state).
-    input             rst_pending
+    output reg        dump_cmd_mode
 );
 
     // =========================================================================
@@ -195,7 +178,6 @@ module mem_ctrl (
     localparam [1:0] SRC_LCD  = 2'd0;
     localparam [1:0] SRC_CPU  = 2'd1;
     localparam [1:0] SRC_BOOT = 2'd2;
-    localparam [1:0] SRC_SAVE = 2'd3;
 
     reg [1:0] grant;
 
@@ -278,8 +260,6 @@ module mem_ctrl (
     wire ram_load_cpu  = !ram_valid && !lcd_pend && cpu_ram_want;
     wire ram_load_boot = !ram_valid && !lcd_pend && !cpu_ram_want &&
                          boot_ram_want;
-    wire ram_load_save = !ram_valid && !lcd_pend && !cpu_ram_want &&
-                         !boot_ram_want && save_req;
 
     always @(posedge clk) begin
         if (reset) begin
@@ -335,15 +315,6 @@ module mem_ctrl (
                     ram_wdata <= boot_ram_wdata;
                     ram_uds_n <= 1'b0;
                     ram_lds_n <= 1'b0;
-                end else if (save_req) begin
-                    // Lowest priority: RAM save read (ram_save.sv)
-                    ram_valid <= 1'b1;
-                    ram_src   <= SRC_SAVE;
-                    ram_wr    <= 1'b0;   // always a read
-                    ram_addr  <= RAM_BASE + {7'd0, save_addr, 1'b0};
-                    ram_wdata <= 16'd0;
-                    ram_uds_n <= 1'b0;
-                    ram_lds_n <= 1'b0;
                 end
             end
         end
@@ -371,9 +342,6 @@ module mem_ctrl (
             cpu_ram_done <= 1'b0;
             boot_ram_done<= 1'b0;
             dump_rd_data <= 16'd0;
-            save_rdata   <= 16'd0;
-            save_ack     <= 1'b0;
-            ram_write_pulse <= 1'b0;
         end else begin
             sd_rd         <= 1'b0;
             sd_wr         <= 1'b0;
@@ -381,8 +349,6 @@ module mem_ctrl (
             lcd_ram_ack   <= 1'b0;
             cpu_ram_done  <= 1'b0;
             boot_ram_done <= 1'b0;
-            save_ack      <= 1'b0;
-            ram_write_pulse <= 1'b0;
 
             case (grant)
                 G_NONE: begin
@@ -423,7 +389,6 @@ module mem_ctrl (
                             end
                             SRC_CPU: begin
                                 cpu_ram_done <= 1'b1;
-                                if (ram_wr) ram_write_pulse <= 1'b1;
                             end
                             SRC_BOOT: begin
                                 // Dump reads latch their word here; the
@@ -432,10 +397,7 @@ module mem_ctrl (
                                     dump_rd_data <= sd_rdata;
                                 boot_ram_done <= 1'b1;
                             end
-                            SRC_SAVE: begin
-                                save_rdata <= sd_rdata;
-                                save_ack   <= 1'b1;
-                            end
+                            default: ;
                         endcase
                         grant <= G_NONE;
                     end
@@ -509,12 +471,6 @@ module mem_ctrl (
     reg [3:0]  boot_state;
     reg [16:0] clr_idx;    // RAM clear index  (0..131071)
     reg [6:0]  boot_idx;   // Header word index (0..127)
-    reg        restore_happened; // a .sav restore ran since last image load
-    reg [3:0]  boot_grace; // B_WAIT settle count (rst_pending lags rom_loaded)
-    reg        rst_seen;   // rst_pending pulse seen while parked in B_DONE
-    reg        hdr_from_basecode; // boot vectors from flash $0 (warm-capable
-                               // basecode) instead of the $812088 cold-install
-                               // header — set whenever a .sav restore ran
 
     // Command dump (host 'D' command): range + progress
     reg        cmd_mem_r;      // 0 = flash image, 1 = calc RAM
@@ -676,14 +632,9 @@ module mem_ctrl (
                 S_IDLE: begin
                     cpu_dtack_n <= 1'b1;
                     if (boot_req) begin
-                        // Boot header copy. After a .sav restore the vectors
-                        // come from the basecode boot block at the START of
-                        // the flash window (CPU $800000 = image word $000000;
-                        // what real hardware fetches at reset): it checks RAM
-                        // validity and warm-boots with RAM preserved. Fresh
-                        // installs use the $812088 cold-install header.
-                        req_addr  <= (hdr_from_basecode ? 24'h800000 :
-                                                         24'h812088) +
+                        // Boot header copy: the cold-install header at
+                        // flash $812088.
+                        req_addr  <= 24'h812088 +
                                      {16'd0, boot_idx, 1'b0};
                         req_rw    <= 1'b1;
                         req_uds_n <= 1'b0;
@@ -891,10 +842,6 @@ module mem_ctrl (
         if (reset || !rom_loaded) begin
             boot_state      <= B_WAIT;
             boot_done       <= 1'b0;
-            restore_happened <= 1'b0;
-            boot_grace      <= 4'd0;
-            rst_seen        <= 1'b0;
-            hdr_from_basecode <= 1'b0;
             clr_idx         <= 17'd0;
             boot_idx        <= 7'd0;
             boot_ram_want   <= 1'b0;
@@ -925,26 +872,8 @@ module mem_ctrl (
 
             case (boot_state)
                 B_WAIT: begin
-                    // rst_pending (ram_save rst_req) rises 1-2 cycles AFTER
-                    // rom_loaded (the auto-restore trigger needs two
-                    // registered edges), so require it to stay low for a
-                    // settle window before deciding. A restore that ran (or
-                    // is starting) skips the RAM clear — battery-RAM
-                    // semantics — but still falls into B_COPY: the saved
-                    // runtime vector page is NOT a valid power-on state on
-                    // this OS (SSP=0), and the CPU must boot from the
-                    // pristine header like every cold start.
-                    if (rst_pending) begin
-                        restore_happened  <= 1'b1;
-                        hdr_from_basecode <= 1'b1;
-                        boot_grace        <= 4'd0;
-                    end else if (init_done) begin
-                        if (boot_grace != 4'd15)
-                            boot_grace <= boot_grace + 4'd1;
-                        else
-                            boot_state <= restore_happened ? B_COPY :
-                                          (dump_en ? B_DPASS : B_CLEAR);
-                    end
+                    if (init_done)
+                        boot_state <= dump_en ? B_DPASS : B_CLEAR;
                 end
 
                 B_DPASS: begin
@@ -1046,24 +975,10 @@ module mem_ctrl (
 
                 B_DONE: begin
                     boot_done <= 1'b1;
-                    // A .sav restore just finished while parked here (manual
-                    // "Load Backup RAM" mid-session): re-copy the pristine
-                    // OS header over the restored vector page and hold the
-                    // CPU (boot_done low) until it lands — the saved runtime
-                    // vectors are not a power-on state (SSP=0), so releasing
-                    // into them bus-errors immediately.
-                    if (rst_seen && !rst_pending) begin
-                        rst_seen          <= 1'b0;
-                        boot_idx          <= 7'd0;
-                        boot_done         <= 1'b0;
-                        hdr_from_basecode <= 1'b1;
-                        boot_state        <= B_COPY;
-                    end else if (rst_pending)
-                        rst_seen <= 1'b1;
                     // Host command dump: only accepted here (CPU released,
                     // no boot dump in flight). cmd_req arrives already
                     // validated/clamped by dbg_uart's parser.
-                    else if (cmd_req) begin
+                    if (cmd_req) begin
                         cmd_mem_r      <= cmd_mem;
                         cmd_wr_r       <= cmd_wr;
                         cmd_start_r    <= cmd_start;
