@@ -62,7 +62,7 @@ module savestate (
     input             sd_ack,
     input       [7:0] sd_buff_addr,
     input      [15:0] sd_buff_dout,
-    output reg [15:0] sd_buff_din,
+    output wire [15:0] sd_buff_din,
     input             sd_buff_wr,
 
     // ---- OSD controls ----
@@ -86,6 +86,7 @@ module savestate (
     output reg [15:0] b_wdata,
     output reg        b_wr,
     input             b_wait,
+    input             b_fifo_empty, // SDRAM port-B FIFO fully drained
 
     // ---- CPU + IO + Timer state bus (fx68k/cpu_wrapper + io_ports +
     // timer_int, concatenated: {cpu(1411), io(793), timer(50), 2'b00}) ----
@@ -113,12 +114,19 @@ module savestate (
     // 256-word sector buffer, reused for both RAM sectors and the state blob
     reg [15:0] sec_buf [0:255];
 
-    always @(posedge clk) begin
-        sd_buff_din <= sec_buf[sd_buff_addr];
-    end
+    assign sd_buff_din = sec_buf[sd_buff_addr];
 
     // =========================================================================
     // Mount tracking
+    //
+    // ss_ena is latched on EVERY read-write mount of slot 0, regardless of
+    // img_size. The OS download auto-mounts saves/TI89/<osname>.sav (the
+    // "FS" flag on the OS entry does this, same as every console core);
+    // when the file does not exist yet that mount arrives with img_size
+    // == 0. Requiring a non-empty file here would disable saving forever,
+    // because MiSTer only creates the file on the first sector write --
+    // which this module only performs when a save is triggered. This is
+    // exactly the convention ti83p_save.sv (and Saturn/MegaCD) use.
     // =========================================================================
     reg ss_ena;
     reg old_ack;
@@ -132,6 +140,8 @@ module savestate (
         end
     end
 
+    // Loading still requires a non-empty image: there is nothing to read
+    // back from a file that has never been written.
     wire load_trigger = (load_trig && ss_ena && |img_size);
     wire save_trigger = (save_trig && ss_ena);
 
@@ -149,7 +159,8 @@ module savestate (
     localparam [3:0] S_REST_WAIT    = 4'd5; // HPS writes into sec_buf via sd_buff_wr
     localparam [3:0] S_REST_DRAIN   = 4'd6; // sec_buf -> SDRAM port B (RAM sectors only)
     localparam [3:0] S_BLOB_PACK    = 4'd7; // ssDout -> sec_buf (save, state sector)
-    localparam [3:0] S_BLOB_UNPACK  = 4'd8; // sec_buf -> ssDin + ssWr pulse (load, state sector)
+    localparam [3:0] S_BLOB_UNPACK  = 4'd8; // sec_buf -> ssDin (load, state sector)
+    localparam [3:0] S_FIFO_DRAIN   = 4'd10; // wait for SDRAM port-B FIFO, then ssWr pulse
     localparam [3:0] S_DONE         = 4'd9; // release want_halt
 
     reg [3:0] state;
@@ -360,8 +371,20 @@ module savestate (
                     for (ui = 0; ui < STATE_WORDS; ui = ui + 1) begin
                         ssDin_r[ (2255 - ui*16) -: 16] <= sec_buf[ui];
                     end
-                    ssWr  <= 1'b1;   // one-cycle load pulse, applies ssDin_r
-                    state <= S_DONE;
+                    // Do NOT fire ssWr yet -- the RAM restore writes are still
+                    // draining through the SDRAM port-B FIFO. Wait in
+                    // S_FIFO_DRAIN until the FIFO empties, THEN fire ssWr so
+                    // the CPU sees a coherent RAM + register state.
+                    state <= S_FIFO_DRAIN;
+                end
+
+                S_FIFO_DRAIN: begin
+                    // Hold CPU halted until every port-B write has committed
+                    // to SDRAM. Only then apply the CPU/IO/Timer state blob.
+                    if (b_fifo_empty) begin
+                        ssWr  <= 1'b1;   // one-cycle load pulse
+                        state <= S_DONE;
+                    end
                 end
 
                 S_DONE: begin

@@ -73,6 +73,7 @@ module sdram (
     input  [15:0] b_wdata,
     input         b_wr,
     output        b_wait,      // FIFO almost full
+    output        b_fifo_empty, // FIFO fully drained (all port-B writes committed)
 
     output reg    init_done    // SDRAM initialized, accesses allowed
 );
@@ -143,6 +144,7 @@ module sdram (
     wire [3:0]  fifo_count = fifo_wptr - fifo_rptr;
     wire        fifo_empty = (fifo_count == 4'd0);
     assign b_wait = (fifo_count >= 4'd6);
+    assign b_fifo_empty = fifo_empty;
 
     // Refresh manager
     reg  [9:0] rfs_cnt;

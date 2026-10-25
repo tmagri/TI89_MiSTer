@@ -67,7 +67,13 @@ module cpu_wrapper (
 
     always @(posedge clk) begin
         if (ssWr) begin
-            { clk_counter, en_phi1, en_phi2} <= ssDin[1410:1406];
+            // On restore, always start counter from 0 so the first
+            // phi events fire in a well-defined order (enPhi2 at count=2,
+            // enPhi1 at count=5) that matches tState=T0 (bus-idle).
+            // The saved clk_counter value is intentionally discarded.
+            clk_counter <= 3'd0;
+            en_phi1     <= 1'b0;
+            en_phi2     <= 1'b0;
         end
         else if (reset || !cpu_en || halt) begin
             clk_counter <= 3'd0;

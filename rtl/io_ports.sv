@@ -415,7 +415,7 @@ module io_ports (
               io2[50], io2[51], io2[52], io2[53], io2[54], io2[55], io2[56],
               io2[57], io2[58], io2[59], io2[60], io2[61], io2[62], io2[63]
             } <= ssDin[536:25];
-            { cpu_stop_pulse, ack_ai2_pulse, ack_ai6_pulse, timer_load_pulse} <= ssDin[24:21];
+            { cpu_stop_pulse, ack_ai2_pulse, ack_ai6_pulse, timer_load_pulse} <= 4'b0000; // pulses are transient, never restore
         end
         else if (reset) begin
             integer i;

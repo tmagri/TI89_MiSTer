@@ -6,6 +6,8 @@ The core recreates the TI-89 Titanium (HW3) on the Terasic DE10-Nano board: a cy
 
 > **Legal note:** The calculator's operating system image (`TI89Titanium_OS.89u`) is copyrighted by Texas Instruments. This project does **not** contain or distribute the OS image. You must supply your own `.89u` file and load it at runtime through the MiSTer OSD — the same pattern used for Amiga Kickstart ROMs in Minimig.
 
+![TI-89 calculator](./TI89.png)
+
 ## How this was built
 
 The RTL in this repository was written by an LLM working under human direction; all references listed below were used as part of the research. My contributions included research, architectural direction, and the use of existing software and hardware simulations to replicate the processes. Currently, research is focused on loading the OS image into memory and booting the OS from it.

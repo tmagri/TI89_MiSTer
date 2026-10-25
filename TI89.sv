@@ -242,7 +242,8 @@ module emu
 
 	localparam CONF_STR = {
 		"TI89;;",
-		"F0,89u,Load OS Image;",
+		"FS0,89u,Load OS Image;",
+		"S0,SAV,Mount save image;",
 		"-;",
 		"O[3:2],LCD Color,Green,Blue,Amber,B&W;",
 		"O[5:4],LCD Scale,4x,3x,2x,1x;",
@@ -257,6 +258,7 @@ module emu
 		"R[14],Load State;",
 		"-;",
 		"R0,Reset;",
+		"I,Saving...,Loading...;",
 		"V,v1.0;"
 	};
 
@@ -268,7 +270,8 @@ module emu
 	wire  [15:0] ioctl_dout;
 	wire  [10:0] ps2_key;
 	wire   [1:0] hps_buttons;
-	wire         sdram_b_wait;   // SDRAM loader-FIFO backpressure
+	wire         sdram_b_wait;       // SDRAM loader-FIFO backpressure
+	wire         sdram_b_fifo_empty; // SDRAM port-B FIFO fully drained
 	wire  [32:0] timestamp;
 
 	// MiSTer standard block device interface (save-state slots)
@@ -354,8 +357,8 @@ module emu
 		.status_set(1'b0),
 		.status_menumask(16'd0),
 
-		.info_req(1'b0),
-		.info(8'd0),
+		.info_req(ss_busy),
+		.info(ss_restoring ? 8'd2 : 8'd1),  // 1=Saving, 2=Loading (MiSTer OSD banner)
 
 		.img_mounted(ss_img_mounted),
 		.img_readonly(ss_img_readonly),
@@ -474,6 +477,7 @@ module emu
 		.b_wdata(ss_restoring ? ss_b_wdata : ld_dout),
 		.b_wr(ss_restoring ? ss_b_wr : ld_wr),
 		.b_wait(sdram_b_wait),
+		.b_fifo_empty(sdram_b_fifo_empty),
 
 		.init_done(sdram_init_done)
 	);
@@ -817,6 +821,7 @@ module emu
 		.b_wdata(ss_b_wdata),
 		.b_wr(ss_b_wr),
 		.b_wait(sdram_b_wait),
+		.b_fifo_empty(sdram_b_fifo_empty),
 
 		.ssWr(ss_wr),
 		.ssDin(ss_din[2255:0]),
